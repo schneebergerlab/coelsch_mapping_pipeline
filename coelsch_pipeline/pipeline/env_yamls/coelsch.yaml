@@ -1,4 +1,4 @@
-name: coelsch
+name: snco
 channels:
  - conda-forge
  - bioconda
@@ -21,4 +21,4 @@ dependencies:
  - nbconvert
  - seaborn
  - pip:
-   - git+https://github.com/schneebergerlab/coelsch.git
+   - git+https://github.com/schneebergerlab/snco.git

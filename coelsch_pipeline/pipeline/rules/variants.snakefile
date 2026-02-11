@@ -252,7 +252,7 @@ rule filter_msyd_snps_for_star_consensus:
           {params.blacklist_flag} |
         bcftools view -G
           -e "STRLEN(REF)>{params.max_indel_size} || STRLEN(ALT)>{params.max_indel_size}" |
-        awk '$0 ~ /^##/ || $4 !~ /[acgtryswkmbdhvnSWKMBDHVN]/ || $5 !~ /[acgtryswkmbdhvnSWKMBDHVN]/' |
+        awk '$0 ~ /^#/ || ($4 ~ /^[ACGT]+$/ && $5 ~ /^[ACGT]+$/)' |
         bcftools norm --remove-duplicates 
           -f {input.fasta}
         > {output.vcf};
