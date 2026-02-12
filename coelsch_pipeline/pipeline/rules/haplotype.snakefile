@@ -10,7 +10,25 @@ def get_cb_tag_id(wc):
 
 
 rule remove_pcr_duplicates:
-    '''filter out PCR duplicates in single-cell ATAC libraries'''
+    """
+    Remove PCR duplicates from aligned BAMs using barcode-aware duplicate marking.
+    Run when haplotyping: preprocessing: filter_pcr_duplicates is True
+
+    Uses samtools markdup to remove duplicates while respecting a per-library/per-cell
+    barcode tag. The tag used depends on technology (e.g. RG for plate-based, CB for
+    droplet-based), and duplicates are removed within barcode groups rather than across
+    the entire dataset.
+
+    Parameters:
+      Defined in config sections:
+        - datasets: <dataset_name> (technology, used to choose barcode tag)
+
+    Inputs:
+      - collapsed / dataset-level coordinate-sorted BAM and index (results/aligned_data)
+
+    Outputs:
+      - deduplicated BAM and index (results/aligned_data)
+    """
     input:
         bam=results('aligned_data/{dataset_name}.sorted.bam'),
         bai=results('aligned_data/{dataset_name}.sorted.bam.bai'),
@@ -35,6 +53,7 @@ rule remove_pcr_duplicates:
 
 
 def filter_input(wc):
+    '''Input files to filtering rule'''
     tech_type = config['datasets'][wc.dataset_name]['technology']
     if tech_type not in ('10x_rna_v4', '10x_rna_v3', 'bd_rna') and \
             config['haplotyping']['preprocessing']['filter_pcr_duplicates']:
@@ -57,6 +76,31 @@ def get_filter_tag(wc):
 
 
 rule filter_informative_reads:
+    """
+    Filter the BAM file to reads that are informative for haplotyping and build an initial barcode whitelist.
+
+    Keeps reads that:
+      - have a valid cell/sample barcode tag (CB or RG depending on technology), and
+      - have a haplotype assignment tag (ha) that is not equal to the “all-haplotypes” sentinel, i.e.
+        aligns equally well to all haplotypes.
+
+    Produces a filtered BAM and a whitelist of barcodes with at least a minimum number
+    of informative reads. PCR-deduped BAMs are used as input only when enabled and
+    relevant for the dataset technology.
+
+    Parameters:
+      Defined in config sections:
+        - datasets: <dataset_name> (technology, genotypes/haplotypes; used for filter tag + barcode tag)
+        - haplotyping: preprocessing (min_informative_reads_per_barcode, filter_pcr_duplicates)
+
+    Inputs:
+      - either deduplicated or non-deduplicated dataset BAM and index (results/aligned_data)
+        (choice determined by technology and haplotyping: preprocessing settings)
+
+    Outputs:
+      - filtered BAM and index containing informative reads (results/aligned_data)
+      - initial barcode whitelist text file (results/aligned_data)
+    """
     input:
         unpack(filter_input)
     output:
@@ -104,6 +148,23 @@ def get_hap_filter_exprs(wc):
 
 
 rule split_f1_x_f1_haplotypes:
+    """
+    Split diploid_f1*f1 datasets into two haplotype BAMs before haplotyping.
+
+    For diploid_f1*f1 designs, separates the filtered BAM into two BAMs corresponding
+    to the two parental pairs (hap1 = parent1/parent2, hap2 = parent3/parent4) based on
+    the haplotype tag (ha). This allows downstream haplotyping to treat each split as
+    effectively haploid.
+
+    Parameters:
+      Defined in config section datasets: <dataset_name> (ploidy and founder_haplotypes).
+
+    Inputs:
+      - filtered haplotype- and barcode-labelled BAM and index (results/aligned_data)
+
+    Outputs:
+      - hap1 / hap2 filtered BAMs and indices (results/aligned_data)
+    """
     input:
         bam=results('aligned_data/{dataset_name}.filtered.bam'),
         bai=results('aligned_data/{dataset_name}.filtered.bam.bai'),
@@ -254,6 +315,35 @@ def get_tech_specific_params(wc):
 
 
 rule run_haplotyping:
+    """
+    Run Coelsch haplotyping on filtered alignments to produce per-barcode genotype predictions.
+
+    Executes `coelsch bam2pred` to:
+      - aggregate informative reads/fragments into fixed genomic bins,
+      - optionally apply a user-defined mask BED (to exclude problematic regions/centromeres),
+      - perform per-barcode genotyping / cleaning (mode depends on ploidy and config),
+      - produce marker JSONs (initial + filtered) and per-barcode prediction outputs.
+
+    Supports multiple technology modes by selecting different tag conventions (CB/RG/UB),
+    correction methods, and validation settings. Also supports special handling for
+    haploid_f1*f1 (recombinant-parent JSONs) and diploid_f1*f1 (when hap-splitting is used).
+
+    Parameters:
+      Defined in config sections:
+        - haplotyping: coelsch (bin size, segment size, terminal segment size, cM per Mb)
+        - haplotyping: preprocessing (thresholds for filtering, background, genotyping probability/error, marker imbalance)
+        - datasets: <dataset_name> (technology, ploidy, genotypes, haplotype definitions)
+        - annotations: (optional masking bed file via reference genotype)
+
+    Inputs:
+      - filtered BAM and index for the dataset (or hap-split BAM for diploid_f1*f1) (results/aligned_data)
+      - initial barcode whitelist (results/aligned_data)
+      - optional mask BED for the reference genome (annotations)
+
+    Outputs:
+      - marker sets before/after filtering (results/haplotypes/*.markers_*.json)
+      - per-barcode predictions and summary stats (results/haplotypes/*.pred.json, *.pred.stats.tsv)
+    """
     input:
         unpack(get_haplotyping_input)
     output:
@@ -307,16 +397,34 @@ rule run_haplotyping:
           {input.bam}
         ''')
 
+# required for formatting of notebook input
+include: './notebook.snakefile'
 
 rule haplotyping_report:
+    """
+    Generate a haplotyping QC/report notebook from Coelsch outputs.
+
+    Runs a notebook template that consumes the marker JSONs, predictions, and stats
+    from `run_haplotyping` and produces a rendered analysis notebook for inspection.
+
+    Parameters:
+      Notebook template is fixed in the rule; execution environment defined by the coelsch conda env.
+
+    Inputs:
+      - Coelsch marker JSONs, predictions, and stats (results/haplotypes)
+
+    Outputs:
+      - executed report notebook (results/analysis)
+    """
     input:
-        markers_init=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_init.json'),
-        markers_filt=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_filt.json'),
-        preds=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.json'),
-        stats=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.stats.tsv'),
+        markers_init=results('haplotypes/{dataset_name}.markers_init.json'),
+        markers_filt=results('haplotypes/{dataset_name}.markers_filt.json'),
+        preds=results('haplotypes/{dataset_name}.pred.json'),
+        stats=results('haplotypes/{dataset_name}.pred.stats.tsv'),
+        notebooks=results('analysis/{dataset_name}.haplotyping_report.template.py.ipynb')
     log:
-        notebook=results('analysis/{dataset_name_plus_optional_haplo}.haplotyping_report.py.ipynb')
+        notebook=results('analysis/{dataset_name}.haplotyping_report.py.ipynb')
     conda:
         get_conda_env('coelsch')
     notebook:
-        '../notebook_templates/haplotyping_report.py.ipynb'
+        lambda wc: results(f'analysis/{wc.dataset_name}.haplotyping_report.template.py.ipynb')

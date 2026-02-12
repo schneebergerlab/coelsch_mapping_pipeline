@@ -83,8 +83,22 @@ def calculate_genome_sa_index_nbases(wc, input):
 
 rule build_STAR_index:
     """
-    Builds a STAR genome index for alignment. Uses either reference genome alone, or in conjunction with a 
-    VCF file to produce a "STAR consensus" variant transformed genome.
+    Build a STAR genome index for alignment, optionally using STAR genome transform.
+
+    Creates a STAR index either from the reference genome alone, or (when ref genotype != qry genotype)
+    from the reference genome plus a per-query VCF to generate a haploid “STAR consensus”
+    transformed genome index.
+
+    Parameters:
+      Defined in config section alignment: star (and uses VCFs produced under variants: star_consensus).
+
+    Inputs:
+      - reference genome fasta (annotations)
+      - reference genome annotation GTF (annotations)
+      - optional query VCF for genome transformation (annotations/vcf/star_consensus)
+
+    Outputs:
+      - STAR genome index directory for the reference × query combination (annotations/star_indexes)
     """
     input:
         unpack(get_star_index_input)
