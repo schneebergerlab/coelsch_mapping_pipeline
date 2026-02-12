@@ -8,7 +8,22 @@ include: './align_common.snakefile'
 
 
 rule cell_barcode_rc:
-    '''reverse complement a fastq file, necessary for some snATAC-seq datasets sequenced on BGI nanoball'''
+    """
+    Reverse-complement barcode FASTQs for sequencing layouts that require it.
+
+    Some snATAC-seq datasets (e.g. certain BGI/Nanoball runs) encode the barcode read
+    in the opposite orientation. This rule reverse-complements the barcode FASTQ and
+    bgzips the result for downstream alignment.
+
+    Parameters:
+      Defined in config section preprocessing: atac (rev_comp_barcode) and file_suffixes.
+
+    Inputs:
+      - barcode fastq for each sample (raw_data)
+
+    Outputs:
+      - reverse-complemented barcode fastq (raw_data)
+    """
     input:
         barcode=raw_data(f'{{sample_name}}{config["file_suffixes"]["barcode"]}'),
     output:
@@ -179,9 +194,31 @@ def get_spliced_alignment_params(wc):
 
 
 rule STAR_consensus:
-    '''
-    map reads for a single-cell dataset using STARsolo and a VCF-transformed genome index.
-    '''
+    """
+    Align droplet-based single-cell reads with STARsolo against haplotype transformed indices.
+
+    Runs STARsolo in droplet mode for one dataset_name × haplotype combination. Uses the
+    appropriate barcode/UMI parsing configuration for the dataset technology, and
+    emits a coordinate-sorted BAM plus STAR logs. If the index was built with a VCF
+    transform (qry != ref), emits SAM records with genome transform output enabled.
+
+    Parameters:
+      Defined in config sections:
+        - alignment: star (shared alignment settings)
+        - alignment: star: rna / atac (technology-specific settings)
+        - datasets: <dataset_name> (technology type, reference genotype, genotypes)
+        - preprocessing: atac (barcode reverse-complement behaviour)
+        - file_suffixes (fastq naming)
+
+    Inputs:
+      - STAR index directory for reference × query combination (annotations/star_indexes)
+      - barcode whitelist file(s) for the sequencing technology
+      - dataset fastqs (reads, and mates/barcodes depending on technology) (raw_data)
+
+    Outputs:
+      - temporary coordinate-sorted BAM and index for this dataset × haplotype (results/aligned_data/haploid)
+      - STAR run logs (results/logs)
+    """
     input:
         unpack(STAR_consensus_input)
     output:
@@ -242,9 +279,21 @@ rule STAR_consensus:
 
 
 rule sort_bam_by_name:
-    '''
-    name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
-    '''
+    """
+    Name-sort STAR output to guarantee consistent read order across haplotypes.
+
+    Converts coordinate-sorted STAR BAMs into name-sorted BAMs so that
+    read-id ordering is consistent across haplotype-specific alignments. This is required
+    for deterministic merging and subsequent per-read haplotype selection.
+
+    Fixmate is also run to update mate information for paired-ended snATAC-seq data.
+
+    Inputs:
+      - coordinate-sorted haplotype BAM and index (results/aligned_data/haploid)
+
+    Outputs:
+      - temporary name-sorted haplotype BAM (results/aligned_data/haploid)
+    """
     input:
         bam=results('aligned_data/haploid/{dataset_name}.{qry}.sorted.bam'),
         bai=results('aligned_data/haploid/{dataset_name}.{qry}.sorted.bam.bai')
@@ -280,9 +329,19 @@ def get_merge_input(wc):
 
 
 rule merge_name_sorted_bams:
-    '''
-    merge all haplotype-specific alignments into a single name-sorted bam file for haplotype collapsing
-    '''
+    """
+    Merge per-haplotype name-sorted BAMs into a single name-sorted BAM.
+
+    Combines all haplotype-specific alignments for a dataset into one BAM while
+    preserving name-sorted order, producing the input required for haplotype
+    collapsing / best-alignment selection.
+
+    Inputs:
+      - name-sorted BAMs for each haplotype aligned for this dataset (results/aligned_data/haploid)
+
+    Outputs:
+      - temporary merged name-sorted BAM for the dataset (results/aligned_data)
+    """
     input:
         unpack(get_merge_input)
     output:
@@ -301,10 +360,20 @@ rule merge_name_sorted_bams:
 
 
 rule collapse_alignments:
-    '''
-    Uses coelsch script collapse_ha_specific_alns.py to select the best haplotype alignment(s) for each read
-    and outputs a single alignment with a new ha tag that indicates which haplotype(s) is/are best
-    '''
+    """
+    Collapse haplotype-specific alignments into a single best alignment per read.
+
+    Uses the coelsch collapse_ha_specific_alns.py script to choose the best haplotype
+    alignment(s) for each read from the merged name-sorted BAM, then sorts and indexes
+    the resulting BAM. Adds/updates a haplotype tag [ha] indicating which haplotype(s) were
+    selected as best for each read.
+
+    Inputs:
+      - merged name-sorted BAM containing alignments to all haplotypes (results/aligned_data)
+
+    Outputs:
+      - final coordinate-sorted haplotype-labelled BAM and index for the dataset (results/aligned_data)
+    """
     input:
         bam=results('aligned_data/{dataset_name}.namesorted.bam')
     output:

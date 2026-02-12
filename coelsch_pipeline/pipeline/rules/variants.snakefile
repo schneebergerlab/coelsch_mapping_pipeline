@@ -1,5 +1,23 @@
 rule mappability:
-    ''''''
+    '''
+    Compute genome mappability for each input genome with GenMap and soft-mask low-mappability regions.
+
+    Uses GenMap to build a k-mer mappability bedGraph for a genotype, then:
+      - selects positions with mappability < min_mappability,
+      - expands intervals by kmer_size,
+      - merges nearby intervals within mask_gap_size,
+      - soft-masks those intervals in the FASTA and indexes it.
+
+    Parameters:
+      - Defined in config section variants: mappability
+
+    Inputs:
+      - genotype fasta file plus index (annotations)
+
+    Outputs:
+      - genotype bedgraph of mappability (annotations)
+      - genotype softmasked fasta (annotations)
+    '''
     input:
         fasta=lambda wc: get_fasta(wc.geno),
         fai=lambda wc: get_fasta(wc.geno) + '.fai',
@@ -43,7 +61,21 @@ rule mappability:
 
 
 rule minimap2_wga:
-    '''align two chromosome-scale genome assemblies with minimap2 for analysis with syri'''
+    """
+    Whole-genome alignment of two chromosome-scale assemblies using minimap2.
+
+    Produces a coordinate-sorted BAM (with index) suitable as input for SyRI.
+
+    Parameters:
+      Defined in config section variants: minimap2.
+
+    Inputs:
+      - reference genome softmasked fasta (annotations)
+      - query softmasked fasta (annotations)
+
+    Outputs:
+      - whole genome alignment of query against reference (annotations/wga)
+    """
     input:
         ref=annotation('{ref}.softmasked.fa'),
         qry=annotation('{qry}.softmasked.fa'),
@@ -72,7 +104,25 @@ rule minimap2_wga:
 
 
 rule run_syri:
-    '''use syri to convert a wga of two genome assemblies into a  vcf file of synteny, as well as snps/indels'''
+    """
+    Call synteny and small variants between two assemblies with SyRI.
+
+    Consumes a minimap2 WGA BAM and the two softmasked assemblies, producing:
+      - SyRI structural/synteny calls (.syri.out)
+      - a VCF summarising synteny blocks and SNP/indel calls
+
+    Parameters:
+      Defined in config section variants: syri.
+
+    Inputs:
+      - reference genome softmasked fasta (annotations)
+      - query softmasked fasta (annotations)
+      - whole genome alignment of query against reference (annotations/wga)
+
+    Outputs:
+      - syri synteny calls (annotations/vcf/syri)
+      - syri vcf output (annotations/vcf/syri)
+    """
     input:
         ref=annotation('{ref}.softmasked.fa'),
         qry=annotation('{qry}.softmasked.fa'),
@@ -113,7 +163,20 @@ def get_msyd_input(wc):
 
 
 rule msyd_input:
-    '''builds a config file for msyd'''
+    """
+    Create an msyd config TSV for a multi-assembly comparison.
+
+    Writes vcf/msyd/{geno_group}.msyd_config.tsv with one row per query assembly,
+    pointing to the WGA BAM, SyRI output, SyRI VCF, and the query genome FASTA.
+
+    Inputs:
+      - WGA BAMs for each reference–query comparison (annotations/wga)
+      - SyRI structural outputs and VCFs (annotations/vcf/syri)
+      - query and reference genome FASTAs (annotations)
+
+    Outputs:
+      - msyd configuration TSV (annotations/vcf/msyd)
+    """
     input:    
         unpack(get_msyd_input)
     output:
@@ -135,10 +198,24 @@ rule msyd_input:
 
 
 rule run_msyd:
-    '''
-    runs msyd to identify "core" synteny between two or more assemblies, 
-    outputs a vcf of SNPs/indels in core regions
-    '''
+    """
+    Identify core synteny across multiple assemblies with msyd and emit SNP/indel VCF.
+
+    Runs `msyd call --core --impute` and post-processes the output VCF to:
+      - drop CORESYN ALT records,
+      - remove msyd-specific FORMAT/INFO fields,
+      - sort, normalise multiallelics, and set missing GTs to reference.
+
+    Inputs:
+      - msyd configuration TSV (annotations/vcf/msyd)
+      - WGA BAMs for each reference–query comparison (annotations/wga)
+      - SyRI structural outputs and VCFs (annotations/vcf/syri)
+      - query and reference genome FASTAs (annotations)
+
+    Outputs:
+      - msyd pan-synteny feature file (pff) (annotations/vcf/msyd)
+      - msyd SNP/indel vcf for core regions (annotations/vcf/msyd)
+    """
     input:
         unpack(get_msyd_input),
         cfg=annotation('vcf/msyd/{geno_group}.msyd_config.tsv'),
@@ -182,8 +259,24 @@ def blacklist_input(wc):
 
 rule blacklist_nonsyntenic_overlapping:
     '''
-    Use bedtools to create a blacklist of regions which are non-syntenic.
-    Since msyd outputs syntenic regions that can overlap non-syntenic ones, this can help remove noisy markers
+    Create a blacklist of ambiguous or overlapping non-syntenic regions.
+
+    Regions showing multiple overlapping alignments across assemblies are
+    detected using alignment coverage and merged into consolidated intervals
+    that can be excluded from downstream variant analyses.
+
+    This overcomes the issue that syri/msyd syntenic alignmets can overlap 
+    with non-syntenic alignments.
+
+    Parameters:
+      mask_gap_size defined in config section variants: mappability.
+
+    Inputs:
+      - WGA BAMs for each reference–query comparison (annotations/wga)
+      - reference genome fasta index (annotations)
+
+    Outputs:
+      - merged blacklist BED of problematic regions (annotations/bed)
     '''
     input:
         unpack(blacklist_input)
@@ -210,7 +303,10 @@ rule blacklist_nonsyntenic_overlapping:
 
 
 def filter_snps_vcf_input(wc):
-    '''input for vcf filtering, can be either msyd output created from wga or a user defined vcf file'''
+    '''
+    input for vcf filtering, can be either msyd output created from wga or 
+    a user defined vcf file
+    '''
     vcf_fns = config['annotations']['vcf_fns']
     ref, *qry_names = wc.geno_group.split('_')
     if ref in vcf_fns and vcf_fns[ref] is not None:
@@ -229,9 +325,23 @@ def filter_snps_vcf_input(wc):
 
 rule filter_msyd_snps_for_star_consensus:
     '''
-    filter and reformat a vcf file (msyd output or user defined) to produce a VCF
-    for a single query vs reference comparison suitable for STAR consensus.
-    Removes softmasked records, indels > max_indel_size, and blacklisted regions
+    Filter SNP/indel variants for use in STAR genome consensus generation.
+
+    Extracts variants for a single query sample, removes softmasked or
+    blacklisted regions, filters large indels, retains standard nucleotide
+    alleles only, and normalises the resulting VCF.
+
+    Parameters:
+      max_indel_size defined in config section variants: star_consensus.
+
+    Inputs:
+      - msyd or user-specified VCF of structural and sequence variants (annotations)
+      - optional blacklist BED of problematic regions (annotations/bed)
+      - reference genome softmasked fasta (annotations)
+
+    Outputs:
+      - filtered per-genotype SNP/indel VCF suitable for STAR consensus (annotations/vcf/star_consensus)
+   
     '''
     input:
         unpack(filter_snps_vcf_input)
