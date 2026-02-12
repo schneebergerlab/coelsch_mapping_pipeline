@@ -407,9 +407,6 @@ rule haplotyping_report:
     Runs a notebook template that consumes the marker JSONs, predictions, and stats
     from `run_haplotyping` and produces a rendered analysis notebook for inspection.
 
-    Parameters:
-      Notebook template is fixed in the rule; execution environment defined by the coelsch conda env.
-
     Inputs:
       - Coelsch marker JSONs, predictions, and stats (results/haplotypes)
 
@@ -427,4 +424,4 @@ rule haplotyping_report:
     conda:
         get_conda_env('coelsch')
     notebook:
-        lambda wc: results(f'analysis/{wc.dataset_name}.haplotyping_report.template.py.ipynb')
+        results('analysis/{dataset_name}.haplotyping_report.template.py.ipynb')
