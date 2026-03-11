@@ -54,9 +54,30 @@ def get_temp_dir(wc, output):
 
 
 rule STAR_consensus:
-    '''
-    map reads for a single individual/barcode using STARsolo and a VCF-transformed genome index.
-    '''
+    """
+    Align plate-based (single-individual/-barcode) reads with STAR against per-haplotype indices.
+
+    Runs STAR in non-solo mode for one individual/barcode × haplotype combination, using the
+    appropriate haplotype-variant-transformed STAR index. Emits a sorted BAM plus STAR logs.
+ 
+    This is the plate-based analogue of the align_droplet STAR_consensus rule, but each sample_name
+    corresponds to one individual/barcode, rather than the whole dataset.
+
+    Parameters:
+      Defined in config sections:
+        - alignment: star (shared alignment settings)
+        - alignment: star: atac (technology-specific settings)
+        - datasets: <dataset_name> (technology type, reference genotype, genotypes)
+        - file_suffixes (fastq naming)
+
+    Inputs:
+      - STAR index directory for reference × query combination (annotations/star_indexes)
+      - paired-end FASTQs for the individual/barcode (read1/read2) (raw_data)
+
+    Outputs:
+      - temporary coordinate-sorted BAM and index for this individual × haplotype (results/aligned_data/single_barcodes/haploid)
+      - STAR run logs (results/logs)
+    """
     input:
         unpack(STAR_consensus_input)
     output:
@@ -115,9 +136,27 @@ rule STAR_consensus:
 
 
 rule sort_bam_by_name:
-    '''
-    name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
-    '''
+    """
+    Name-sort plate-based STAR BAMs to standardise read order across haplotypes.
+
+    Converts coordinate-sorted STAR BAMs into name-sorted BAMs so that
+    read-id ordering is consistent across haplotype-specific alignments. This is required
+    for deterministic merging and subsequent per-read haplotype selection.
+
+    Fixmate is also run to update mate information for paired-ended snATAC-seq data.
+
+    This is the plate-based analogue of the align_droplet sort_bam_by_name rule, but each sample_name
+    corresponds to one individual/barcode, rather than the whole dataset.
+
+    Parameters:
+      Tool behaviour controlled by samtools options in the rule.
+
+    Inputs:
+      - coordinate-sorted haplotype BAM and index (results/aligned_data/single_barcodes/haploid)
+
+    Outputs:
+      - temporary name-sorted haplotype BAM (results/aligned_data/single_barcodes/haploid)
+    """
     input:
         bam=results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam'),
         bai=results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam.bai')
@@ -126,13 +165,16 @@ rule sort_bam_by_name:
     threads: 4
     resources:
         mem_mb=20_000,
+        threads_per_cmd=lambda wc, threads: threads // 2
     conda:
         get_conda_env('htslib')
     shell:
         format_command('''
-        samtools sort -n -@ {threads}
-          {input.bam}
-          > {output.bam};
+        samtools sort
+          -T ${{TMPDIR}}/{wildcards.sample_name}.{wildcards.qry}
+          -n -@ {resources.threads_per_cmd}
+          {input.bam} |
+        samtools fixmate -@ {resources.threads_per_cmd} -m - {output.bam};
         ''')
 
 
@@ -150,10 +192,23 @@ def get_merge_haps_input(wc):
     )
 
 
-rule merge_name_sorted_hap_bams:
-    '''
-    merge all haplotype-specific alignments for a sample/barcode into a single name-sorted bam file for haplotype collapsing
-    '''
+rule merge_name_sorted_bams:
+    """
+    Merge per-haplotype name-sorted for each individual/barcode BAMs into a single name-sorted BAM.
+
+    Combines all haplotype-specific alignments for a dataset into one BAM while
+    preserving name-sorted order, producing the input required for haplotype
+    collapsing / best-alignment selection.
+
+    This is the plate-based analogue of the align_droplet merge_name_sorted_bams rule, but each sample_name
+    corresponds to one individual/barcode, rather than the whole dataset.
+
+    Inputs:
+      - name-sorted BAMs for each haplotype aligned for this individual (results/aligned_data/single_barcodes/haploid)
+
+    Outputs:
+      - temporary merged name-sorted BAM for the dataset (results/aligned_data/single_barcodes)
+    """
     input:
         bams=get_merge_haps_input
     output:
@@ -172,12 +227,23 @@ rule merge_name_sorted_hap_bams:
 
 
 rule collapse_alignments:
-    '''
-    Uses coelsch script collapse_ha_specific_alns.py to select the best haplotype alignment(s) for each read
-    and outputs a single alignment with a new ha tag that indicates which haplotype(s) is/are best.
-    Also adds new RG tag to bam file to indicate the sample name, so that this can be identified later
-    after sample-wise merging
-    '''
+    """
+    Collapse haplotype-specific alignments into a single best alignment per read.
+
+    Uses the coelsch collapse_ha_specific_alns.py script to choose the best haplotype
+    alignment(s) for each read from the merged name-sorted BAM, then sorts and indexes
+    the resulting BAM. Adds/updates a haplotype tag [ha] indicating which haplotype(s) were
+    selected as best for each read.
+
+    This is the plate-based analogue of the align_droplet collapse_alignments rule, but each sample_name
+    corresponds to one individual/barcode, rather than the whole dataset.
+
+    Inputs:
+      - merged name-sorted BAM containing alignments to all haplotypes (results/aligned_data/single_barcodes)
+
+    Outputs:
+      - final coordinate-sorted haplotype-labelled BAM and index for the individual/barcode (results/aligned_data/single_barcodes)
+    """
     input:
         bam=results('aligned_data/single_barcodes/{sample_name}.namesorted.bam')
     output:
@@ -217,7 +283,18 @@ def merge_samples_input(wc):
 
 
 rule list_bam:
-    '''create a list of bam files representing all the samples for a dataset, for merging'''
+    """
+    Write a per-dataset BAM list file for sample-wise merging.
+
+    Collects the haplotype-labelled per-individual/barcode BAMs belonging to a dataset and writes them
+    to a newline-delimited list file, used as input to `samtools merge -b`.
+
+    Inputs:
+      - haplotype-labelled per-individual/barcode BAMs for the dataset (results/aligned_data/single_barcodes)
+
+    Outputs:
+      - temporary text file listing BAM paths for the dataset (results)
+    """
     input:
         bams=merge_samples_input
     output:
@@ -228,7 +305,18 @@ rule list_bam:
 
 
 rule merge_bams:
-    '''sample-wise barcode merging'''
+    """
+    Merge haplotype-labelled per-individual/barcode BAMs into a single dataset-level BAM.
+
+    Merges all per-individual/barcode collapsed BAMs for a dataset into one coordinate-sorted
+    BAM and creates its index. This produces the final dataset-level alignment output.
+
+    Inputs:
+      - newline-delimited list of per-sample BAMs for the dataset (results)
+
+    Outputs:
+      - final merged dataset BAM and index (results/aligned_data)
+    """
     input:
         results("{dataset_name}.list")
     output:
