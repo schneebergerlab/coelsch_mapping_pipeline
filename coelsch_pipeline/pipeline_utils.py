@@ -17,6 +17,13 @@ def format_command(cmd):
     return ''.join(formatted).strip('\n').strip('\\')
 
 
+def setup_tmpdir(prefix="{rule}"):
+    return r'''
+        tmpdir=$(mktemp -d "${{TMPDIR:-/tmp}}/''' + prefix + r'''.{jobid}.XXXXXX");
+        trap 'rm -rf -- "$tmpdir"' EXIT;
+    '''
+
+
 def resolve_path(basedir, path):
     if isinstance(path, list):
         return [os.path.join(basedir,  p) for p in path]

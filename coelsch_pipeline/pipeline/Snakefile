@@ -1,5 +1,6 @@
 from coelsch_pipeline.pipeline_utils import (
-    format_command, annotations_getter, raw_data_getter, results_getter,
+    format_command, setup_tmpdir,
+    annotations_getter, raw_data_getter, results_getter,
     fasta_getter, gtf_getter, barcode_whitelist_getter,
     conda_env_getter
 )

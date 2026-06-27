@@ -43,16 +43,6 @@ def get_transform_flag(wc):
         return ''
 
 
-def get_temp_dir(wc, output):
-    '''
-    create a private directory for each dataset_name/query combination, since STAR does not work well 
-    when multiple processes are run in the same directory
-    '''
-    output_dir = os.path.split(output.bam)[0]
-    tmp_dir = os.path.join(output_dir, f'{wc.sample_name}.{wc.qry}.tmpdir')
-    return tmp_dir
-
-
 rule STAR_consensus:
     '''
     map reads for a single individual/barcode using STARsolo and a VCF-transformed genome index.
@@ -63,7 +53,6 @@ rule STAR_consensus:
         bam=temp(results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam')),
         bai=temp(results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam.bai')),
     params:
-        star_tmp_dir=get_temp_dir,
         readfiles_cmd=get_readfiles_cmd,
         transform_flag=get_transform_flag,
         filter_multimap_nmax=config['alignment']['star']['filter_multimap_nmax'],
@@ -79,10 +68,9 @@ rule STAR_consensus:
     conda:
         get_conda_env('star')
     shell:
-        format_command('''
-        mkdir -p {params.star_tmp_dir};
-        RELPATH=$(realpath --relative-to="{params.star_tmp_dir}" ".");
-        cd {params.star_tmp_dir};
+        format_command(setup_tmpdir() + '''
+        RELPATH=$(realpath --relative-to="$tmpdir" ".");
+        cd $tmpdir;
 
         STAR
           --runThreadN {threads}
@@ -99,18 +87,16 @@ rule STAR_consensus:
           --outSAMattributes "NH" "HI" "AS" "nM" "RG";
 
         cd $RELPATH;
-        mv {params.star_tmp_dir}/Log.progress.out {log.progress};
-        mv {params.star_tmp_dir}/Log.final.out {log.final};
-        mv {params.star_tmp_dir}/Log.out {log.main};
+        mv $tmpdir/Log.progress.out {log.progress};
+        mv $tmpdir/Log.final.out {log.final};
+        mv $tmpdir/Log.out {log.main};
 
         samtools sort
           -m 1G -@ {threads}
           -o {output.bam}
-          {params.star_tmp_dir}/Aligned.out.bam;
+          $tmpdir/Aligned.out.bam;
 
         samtools index {output.bam};
-
-        rm -rf {params.star_tmp_dir}
         ''')
 
 
@@ -129,8 +115,9 @@ rule sort_bam_by_name:
     conda:
         get_conda_env('htslib')
     shell:
-        format_command('''
+        format_command(setup_tmpdir() + '''
         samtools sort -n -@ {threads}
+          -T ${{tmpdir}}/{wildcards.sample_name}.{wildcards.qry}.sort_tmp
           {input.bam}
           > {output.bam};
         ''')
@@ -189,21 +176,19 @@ rule collapse_alignments:
     conda:
         get_conda_env('coelsch')
     shell:
-        format_command('''
+        format_command(setup_tmpdir() + '''
         collapse_ha_specific_alns.py
-          -o {output.bam}.unsorted.bam
+          -o ${{tmpdir}}/{wildcards.dataset_name}.unsorted.bam
           {input.bam};
 
         samtools addreplacerg
           -r "ID:{wildcards.sample_name}"
-          {output.bam}.unsorted.bam |
+          ${{tmpdir}}/{wildcards.dataset_name}.unsorted.bam |
         samtools sort -@ {threads}
-          -T ${{TMPDIR}}/{wildcards.sample_name}
+          -T ${{tmpdir}}/{wildcards.sample_name}.sort_tmp
           -o {output.bam} - ;
 
         samtools index {output.bam};
-
-        rm {output.bam}.unsorted.bam
         ''')
 
 

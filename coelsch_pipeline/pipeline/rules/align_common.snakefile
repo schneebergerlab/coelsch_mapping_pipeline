@@ -28,9 +28,13 @@ def get_star_index_input(wc):
         'fasta': get_fasta(wc.ref),
         'gtf': get_gtf(wc.ref),
     }
-
+    vcf_fns = config['annotations']['vcf_fns']
+    ref, *qry_names = wc.geno_group.split('_')
     if wc.ref != wc.qry:
-        input_['vcf'] = annotation('vcf/star_consensus/msyd/{geno_group}.{qry}.vcf')
+        if ref in vcf_fns and vcf_fns[ref] is not None:
+            input_['vcf'] = annotation('vcf/star_consensus/user_defined/{geno_group}.{qry}.vcf')
+        else:
+            input_['vcf'] = annotation('vcf/star_consensus/syri/{geno_group}.{qry}.vcf')
     return input_
 
 
@@ -103,8 +107,13 @@ rule build_STAR_index:
     shell:
         format_command('''
         mkdir {output};
+
+        STARTMP="_STARtmp_{wildcards.geno_group}.{wildcards.ref}.{wildcards.qry}";
+        [ -n "$STARTMP" ] && rm -rf -- "$STARTMP";
+        trap '[ -n "$STARTMP" ] && rm -rf -- "$STARTMP"' EXIT;
+
         STAR
-          --outTmpDir _STARtmp_{wildcards.geno_group}.{wildcards.ref}.{wildcards.qry}
+          --outTmpDir "$STARTMP"
           --runThreadN {threads}
           --runMode genomeGenerate
           --genomeDir {output}

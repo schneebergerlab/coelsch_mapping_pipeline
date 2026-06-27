@@ -316,6 +316,8 @@ rule haplotyping_report:
         stats=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.stats.tsv'),
     log:
         notebook=results('analysis/{dataset_name_plus_optional_haplo}.haplotyping_report.py.ipynb')
+    resources:
+        mem_mb=50_000
     conda:
         get_conda_env('coelsch')
     notebook:
