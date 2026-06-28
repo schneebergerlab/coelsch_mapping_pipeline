@@ -1,12 +1,10 @@
-import re
-
-
 def get_cb_tag_id(wc):
-    tech_type = config['datasets'][wc.dataset_name]['technology']
-    if tech_type in ('takara_dna', 'plate_wgs'):
+    if dataset(wc).technology in ('takara_dna', 'wgs'):
         return 'RG'
-    else:
-        return 'CB'
+    return 'CB'
+
+
+samtools_markdup_resources = rule_resources('samtools/dedup')
 
 
 rule remove_pcr_duplicates:
@@ -19,11 +17,11 @@ rule remove_pcr_duplicates:
         bai=temp(results('aligned_data/{dataset_name}.deduped.bam.bai')),
     params:
         cb_tag=get_cb_tag_id,
+    threads: samtools_markdup_resources.threads
     resources:
-        mem_mb=10_000,
+        mem_mb=samtools_markdup_resources.mem_mb,
     conda:
         get_conda_env('htslib')
-    threads: 12
     shell:
         format_command('''
         samtools markdup -r -@ {threads}
@@ -35,9 +33,9 @@ rule remove_pcr_duplicates:
 
 
 def filter_input(wc):
-    tech_type = config['datasets'][wc.dataset_name]['technology']
-    if tech_type not in ('10x_rna_v4', '10x_rna_v3', 'bd_rna') and \
-            config['haplotyping']['preprocessing']['filter_pcr_duplicates']:
+    tech = dataset(wc).technology
+    if tech not in ('10x_rna', 'bd_rna') and \
+            cfg.haplotyping.clean.bulk.filter_pcr_duplicates:
         input_file_type = 'deduped'
     else:
         # skips PCR deduplication by taking collapsed output as direct input
@@ -49,11 +47,13 @@ def filter_input(wc):
 
 
 def get_filter_tag(wc):
-    dataset = config['datasets'][wc.dataset_name]
-    all_haplos = set()
-    for geno in dataset['genotypes'].values():
-        all_haplos.update(list(geno['founder_haplotypes'].values()))
-    return ','.join(sorted(all_haplos))
+    haps = founder_haplotypes_from_crossing_combinations(
+        dataset(wc).crossing_combinations
+    )
+    return ','.join(sorted(haps))
+
+
+filter_reads_resources = rule_resources('samtools/view')
 
 
 rule filter_informative_reads:
@@ -68,10 +68,10 @@ rule filter_informative_reads:
     params:
         filter_tag=get_filter_tag,
         cb_tag=get_cb_tag_id,
-        min_reads=config['haplotyping']['preprocessing']['min_informative_reads_per_barcode'],
+        min_reads=cfg.haplotyping.clean.min_markers_per_barcode,
+    threads: filter_reads_resources.threads
     resources:
-        mem_mb=20_000
-    threads: 4
+        mem_mb=filter_reads_resources.mem_mb,
     shell:
         format_command('''
         samtools view -b -@ {threads}
@@ -90,234 +90,262 @@ rule filter_informative_reads:
         ''')
 
 
-def get_hap_filter_exprs(wc):
-    genos = config['datasets'][wc.dataset_name]['genotypes']
-    if len(genos) > 1:
-        raise ValueError(
-            'Cannot split haplotypes for ploidy "diploid_f1*f1" when there is more than one genotype in dataset'
-        )
-    haps = genos[list(genos)[0]]['founder_haplotypes']
-    if wc.haplo == 'hap1':
-        return f'\'[ha] == "{haps["parent1"]}" || [ha] == "{haps["parent2"]}"\''
-    elif wc.haplo == 'hap2':
-        return f'\'[ha] == "{haps["parent3"]}" || [ha] == "{haps["parent4"]}"\''
+def get_load_input(wc):
+    ds = dataset(wc)
+    input_ = {
+        'bam': results(f'aligned_data/{wc.dataset_name}.filtered.bam'),
+        'bai': results(f'aligned_data/{wc.dataset_name}.filtered.bam.bai'),
+        'cb_whitelist': results(f'aligned_data/{wc.dataset_name}.initial_whitelist.txt'),
+    }
 
+    for i, parent_json in enumerate(ds.recombinant_parent_jsons or []):
+        input_[f'recombinant_parent_json_{i}'] = annotation(parent_json)
 
-rule split_f1_x_f1_haplotypes:
-    input:
-        bam=results('aligned_data/{dataset_name}.filtered.bam'),
-        bai=results('aligned_data/{dataset_name}.filtered.bam.bai'),
-    output:
-        bam=results('aligned_data/{dataset_name}_{haplo}.filtered.bam'),
-        bai=results('aligned_data/{dataset_name}_{haplo}.filtered.bam.bai'),
-    conda:
-        '../env_yamls/htslib.yaml'
-    params:
-        filter_exprs=get_hap_filter_exprs
-    shell:
-        format_command('''
-        samtools view -b
-          -e {params.filter_exprs}
-          {input.bam} > {output.bam};
-        samtools index {output.bam};
-        ''')
-
-
-dataset_name_plus_haplo_regex = re.compile(
-    r'^(?P<ds>' + '|'.join(re.escape(d) for d in config['datasets']) + r')(?:_(?P<hap>hap[12]))?$'
-)
-
-def parse_dataset_name(tok):
-    m = dataset_name_plus_haplo_regex.fullmatch(tok)
-    if not m:
-        raise ValueError(f"Bad token: {tok}")
-    ds, hap = m.group('ds'), m.group('hap')
-    if hap is None and config['datasets'][ds]['ploidy'] == 'diploid_f1*f1':
-        raise ValueError('diploid_f1*f1 requires hap suffix (hap1|hap2)')
-    return ds, hap
-
-
-def get_haplotyping_input(wc):
-    dataset_name, haplo = parse_dataset_name(wc.dataset_name_plus_optional_haplo)
-    dataset = config['datasets'][dataset_name]
-    if dataset['ploidy'] != 'diploid_f1*f1':
-        input_ = {
-            'bam': results(f'aligned_data/{dataset_name}.filtered.bam'),
-            'bai': results(f'aligned_data/{dataset_name}.filtered.bam.bai'),
-            'cb_whitelist': results(f'aligned_data/{dataset_name}.initial_whitelist.txt')
-        }
-    else:
-        input_ = {
-            'bam': results(f'aligned_data/{dataset_name}_{haplo}.filtered.bam'),
-            'bai': results(f'aligned_data/{dataset_name}_{haplo}.filtered.bam.bai'),
-            'cb_whitelist': results(f'aligned_data/{dataset_name}.initial_whitelist.txt')
-        }
-    if dataset['ploidy'] == 'haploid_f1*f1':
-        genos = dataset['genotypes']
-        hap_fns = genos[list(genos)[0]]['recombinant_haplotypes']
-        input_['hap1_json_fn'] = annotation(hap_fns['parent12'])
-        input_['hap2_json_fn'] = annotation(hap_fns['parent34'])
-    ref = config['datasets'][dataset_name]['reference_genotype']
-    mask_bed_fn = config['annotations']['mask_bed_fns'][ref]
-    if mask_bed_fn is not None:
-        input_['bed'] = annotation(mask_bed_fn)
     return input_
 
 
-def get_genotyping_params(wc, input):
-    dataset_name, haplo = parse_dataset_name(wc.dataset_name_plus_optional_haplo)
-    dataset = config['datasets'][dataset_name]
-    ploidy_mode = dataset['ploidy']
-    genos = dataset['genotypes']
-    if ploidy_mode != 'haploid_f1*f1':
-        crosses = []
-        if ploidy_mode != 'diploid_f1*f1':
-            for geno in dataset['genotypes'].values():
-                crosses.append(':'.join(sorted(geno['founder_haplotypes'].values())))
-        else:
-            if len(genos) > 1:
-                raise ValueError(
-                    'Cannot split haplotypes for ploidy "diploid_f1*f1" when there is more than one genotype in dataset'
-                )
-            haps = genos[list(genos)[0]]['founder_haplotypes']
-            if haplo == 'hap1':
-                crosses.append(":".join(sorted([haps["parent1"], haps["parent2"]])))
-            elif haplo == 'hap2':
-                crosses.append(":".join(sorted([haps["parent3"], haps["parent4"]])))
-        if len(crosses) > 1:
-            genotype_params = '--genotype --clean-by-genotype -X '
-        else:
-            genotype_params = '-X '
-        return genotype_params + ','.join(crosses)
-    else:
-        # special haploid_f1*f1 mode, provide haplotype jsons for genotyping
-        parent12_hap_fn = input.hap1_json_fn
-        parent34_hap_fn = input.hap2_json_fn
-        return f'--genotype --clean-by-genotype --recombinant-parent-jsons {parent12_hap_fn} {parent34_hap_fn}'
+def get_clean_input(wc):
+    ds = dataset(wc)
+    input_ = {
+        'markers': results(f'haplotypes/{wc.dataset_name}.markers_init.json'),
+    }
+
+    mask_bed_fn = config['annotations']['mask_bed_fns'][ds.reference_genotype]
+    if mask_bed_fn is not None:
+        input_['bed'] = annotation(mask_bed_fn)
+
+    return input_
 
 
-def get_tech_specific_params(wc):
-    dataset_name, haplo = parse_dataset_name(wc.dataset_name_plus_optional_haplo)
-    tech_type = config['datasets'][dataset_name]['technology']
-    if tech_type == "10x_atac":
-        params = '''
-          -x {x_flag}
-          -y {ploidy}
-          --cb-tag CB
-          --hap-tag ha
-          --hap-tag-type "multi_haplotype"
-          --cb-correction-method "exact"
-          --umi-collapse-method "none"
-          --no-clean-bg
-       '''
-    elif tech_type in ("takara_dna", "plate_wgs"):
-        params = '''
-          -x {x_flag}
-          -y {ploidy}
+def run_genotype_flag(ds):
+    recombinant_jsons = ds.recombinant_parent_jsons or []
+    pooled_crosses = len(ds.crossing_combinations or []) > 1
+
+    if recombinant_jsons or pooled_crosses:
+        return '--genotype'
+    return '--no-genotype'
+
+
+def recombinant_parent_json_flags(ds):
+    return ' '.join(
+        f'--recombinant-parent-json {annotation(fn)}'
+        for fn in (ds.recombinant_parent_jsons or [])
+    )
+
+
+def load_tag_params(ds):
+    tech = ds.technology
+
+    if tech in ('wgs', 'takara_dna'):
+        return '''
           --cb-tag RG
           --hap-tag ha
-          --hap-tag-type "multi_haplotype"
-          --cb-correction-method "none"
-          --no-validate
-          --umi-collapse-method "none"
-          --no-clean-bg
-          '''
-        if tech_type == 'plate_wgs':
-            params += '--no-predict-doublets'
-    else:
-        params = '''
-          -x {x_flag}
-          -y {ploidy}
+          --hap-tag-type multi_haplotype
+          --cb-correction-method none
+          --umi-collapse-method none
+        '''
+
+    if tech == '10x_atac':
+        return '''
           --cb-tag CB
-          --umi-tag UB
           --hap-tag ha
-          --hap-tag-type "multi_haplotype"
-          --cb-correction-method "exact"
-          --umi-collapse-method "exact"
-       '''
+          --hap-tag-type multi_haplotype
+          --cb-correction-method exact
+          --umi-collapse-method none
+        '''
 
-    if tech_type.startswith('10x_rna'):
-        x_flag = '10x_rna'
-    elif tech_type == 'plate_wgs':
-        x_flag = 'wgs'
-    else:
-        x_flag = tech_type
-    ploidy = config['datasets'][dataset_name]['ploidy']
-    if ploidy == 'diploid_f1*f1' or ploidy.startswith('haploid'):
-        # switch to haploid since haplotypes have already been separated
-        ploidy = 'haploid'
-    params = params.format(
-        x_flag=x_flag,
-        ploidy=ploidy
-    )
-    return format_command(params.lstrip())
+    return '''
+      --cb-tag CB
+      --umi-tag UB
+      --hap-tag ha
+      --hap-tag-type multi_haplotype
+      --cb-correction-method exact
+      --umi-collapse-method exact
+    '''
 
 
-rule run_haplotyping:
+def get_load_params(wc):
+    ds = dataset(wc)
+    load = cfg.haplotyping.load
+
+    params = [
+        f'-x {ds.technology}',
+        f'--sample-unit {ds.sample_unit}',
+        f'--lifecycle-stage {ds.lifecycle_stage}',
+        f'--crossing-strategy {ds.crossing_strategy}',
+        f'--genotyping-strategy {ds.genotyping_strategy}',
+        '-X "' + ','.join(ds.crossing_combinations) + '"',
+        run_genotype_flag(ds),
+        recombinant_parent_json_flags(ds),
+        f'--min-alignment-score {load.min_alignment_score}',
+        optional_flag('--min-mapq', load.min_mapq),
+        optional_flag('--exclude-contigs', load.exclude_contigs),
+        auto_bool_flag(
+            load.validate_barcodes,
+            '--validate-barcodes',
+            '--no-validate',
+        ),
+        load_tag_params(ds),
+    ]
+
+    return format_params(params, indent=' ' * 10)
+
+
+def get_clean_params(wc):
+    clean = cfg.haplotyping.clean
+    single_cell = clean.single_cell
+
+    params = [
+        f'--min-markers-per-cb {clean.min_markers_per_barcode}',
+        f'--min-markers-per-chrom {clean.min_markers_per_chrom}',
+        f'--min-genotyping-prob {clean.min_genotyping_probability}',
+        f'--max-genotyping-error {clean.max_genotyping_error_rate}',
+        bool_flag(clean.normalise_bins, '--normalise-bins', '--no-normalise-bins'),
+        f'--bin-shrinkage-quantile {clean.bin_shrinkage_quantile}',
+        auto_bool_flag(
+            clean.normalise_depth,
+            '--normalise-depth',
+            '--no-normalise-depth',
+        ),
+        optional_flag('--max-bin-count', clean.max_bin_count),
+        bool_flag(clean.mask_imbalanced, '--mask-imbalanced', '--no-mask-imbalanced'),
+        f'--max-marker-imbalance {clean.max_marker_imbalance}',
+        bool_flag(clean.clean_by_genotype, '--clean-by-genotype', '--clean-all'),
+        bool_flag(single_cell.clean_background, '--clean-bg', '--no-clean-bg'),
+        f'--max-frac-bg {single_cell.max_fraction_background}',
+    ]
+
+    return format_params(params, indent=' ' * 10)
+
+
+def get_predict_params(wc):
+    pred = cfg.haplotyping.predict
+
+    params = [
+        f'-R {pred.segment_size}',
+        f'-t {pred.terminal_segment_size}',
+        f'-C {pred.cm_per_mb}',
+        f'--interference-half-life {pred.interference_half_life}',
+        f'--distribution-type {pred.distribution_type}',
+        bool_flag(pred.sample_co_locs, '--sample-co-locs', '--no-sample-cos'),
+        f'--n-samples {pred.n_samples}',
+        auto_bool_flag(
+            pred.predict_doublets,
+            '--predict-doublets',
+            '--no-predict-doublets',
+        ),
+        f'--n-doublets {pred.n_doublets}',
+        f'--nco-min-prob-change {pred.nco_min_prob_change}',
+        f'--batch-size {pred.batch_size}',
+    ]
+
+    return format_params(params, indent=' ' * 10)
+
+
+coelsch_loadbam_resources = rule_resources('coelsch/loadbam')
+
+
+rule run_loadbam:
     input:
-        unpack(get_haplotyping_input)
+        unpack(get_load_input)
     output:
-        markers_init=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_init.json'),
-        markers_filt=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_filt.json'),
-        preds=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.json'),
-        stats=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.stats.tsv'),
+        markers=results('haplotypes/{dataset_name}.markers_init.json')
     conda:
         get_conda_env('coelsch')
     params:
-        bin_size=config['haplotyping']['coelsch']['genomic_bin_size'],
-        max_frac_bg=config['haplotyping']['preprocessing'].get('max_fraction_background', 0.25),
-        min_geno_prob=config['haplotyping']['preprocessing'].get('min_genotyping_probability', 0.9),
-        max_geno_error=config['haplotyping']['preprocessing'].get('max_genotyping_error_rate', 0.25),
-        max_marker_imbalance=config['haplotyping']['preprocessing'].get('max_marker_imbalance', 0.75),
-        rfactor=config['haplotyping']['coelsch']['segment_size'],
-        term_rfactor=config['haplotyping']['coelsch']['terminal_segment_size'],
-        cm_per_mb=config['haplotyping']['coelsch']['cm_per_mb'],
-        mask_bed_flag=lambda wc, input: f'-m {input.bed}' if hasattr(input, 'bed') else '',
-        genotyping_params=get_genotyping_params,
-        tech_specific_params=get_tech_specific_params,
-        min_reads_per_cb=config['haplotyping']['preprocessing']['min_informative_reads_per_barcode'],
-        min_reads_per_chrom=config['haplotyping']['preprocessing']['min_informative_reads_per_chrom'],
-        output_prefix=lambda wc: results(f'haplotypes/{wc.dataset_name_plus_optional_haplo}')
-    threads: 50
+        bin_size=cfg.haplotyping.predict.genomic_bin_size,
+        load_params=get_load_params,
+    threads: coelsch_loadbam_resources.threads
     resources:
-        mem_mb=150_000
+        mem_mb=coelsch_loadbam_resources.mem_mb
     shell:
         format_command('''
         export OPENBLAS_NUM_THREADS=1;
         export OMP_NUM_THREADS=1;
         export MKL_NUM_THREADS=1;
 
-        coelsch bam2pred -v debug -p {threads}
+        coelsch loadbam -v debug -p {threads}
           --cb-whitelist-fn {input.cb_whitelist}
-          {params.mask_bed_flag}
           -N {params.bin_size}
-          -R {params.rfactor}
-          -t {params.term_rfactor}
-          -C {params.cm_per_mb}
-          {params.tech_specific_params}
-          --min-markers-per-cb {params.min_reads_per_cb}
-          --min-markers-per-chrom {params.min_reads_per_chrom}
-          --min-genotyping-prob {params.min_geno_prob}
-          --max-genotyping-error {params.max_geno_error}
-          --max-frac-bg {params.max_frac_bg}
-          --max-marker-imbalance {params.max_marker_imbalance}
-          --batch-size 128
-          {params.genotyping_params}
-          -o {params.output_prefix}
+          {params.load_params}
+          -o {output.markers}
           {input.bam}
         ''')
 
 
+coelsch_clean_resources = rule_resources('coelsch/clean')
+
+
+rule run_clean:
+    input:
+        unpack(get_clean_input)
+    output:
+        markers=results('haplotypes/{dataset_name}.markers_filt.json')
+    conda:
+        get_conda_env('coelsch')
+    params:
+        bin_size=cfg.haplotyping.predict.genomic_bin_size,
+        clean_params=get_clean_params,
+        mask_bed_flag=lambda wc, input: f'-m {input.bed}' if hasattr(input, 'bed') else '',
+    threads: coelsch_clean_resources.threads
+    resources:
+        mem_mb=coelsch_clean_resources.mem_mb
+    shell:
+        format_command('''
+        coelsch clean -v debug
+          -N {params.bin_size}
+          {params.mask_bed_flag}
+          {params.clean_params}
+          -o {output.markers}
+          {input.markers}
+        ''')
+
+
+coelsch_predict_resources = rule_resources('coelsch/predict')
+
+
+rule run_predict:
+    input:
+        markers=results('haplotypes/{dataset_name}.markers_filt.json')
+    output:
+        preds=results('haplotypes/{dataset_name}.pred.json'),
+        stats=results('haplotypes/{dataset_name}.pred.stats.tsv')
+    conda:
+        get_conda_env('coelsch')
+    params:
+        bin_size=cfg.haplotyping.predict.genomic_bin_size,
+        predict_params=get_predict_params,
+    threads: coelsch_predict_resources.threads
+    resources:
+        mem_mb=coelsch_predict_resources.mem_mb
+    shell:
+        format_command('''
+        export OPENBLAS_NUM_THREADS=1;
+        export OMP_NUM_THREADS=1;
+        export MKL_NUM_THREADS=1;
+
+        coelsch predict -v debug -p {threads}
+          -N {params.bin_size}
+          {params.predict_params}
+          -o {output.preds}
+          {input.markers}
+        ''')
+
+
+report_resources = rule_resources('haplotyping_report')
+
+
 rule haplotyping_report:
     input:
-        markers_init=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_init.json'),
-        markers_filt=results('haplotypes/{dataset_name_plus_optional_haplo}.markers_filt.json'),
-        preds=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.json'),
-        stats=results('haplotypes/{dataset_name_plus_optional_haplo}.pred.stats.tsv'),
+        markers_init=results('haplotypes/{dataset_name}.markers_init.json'),
+        markers_filt=results('haplotypes/{dataset_name}.markers_filt.json'),
+        preds=results('haplotypes/{dataset_name}.pred.json'),
+        stats=results('haplotypes/{dataset_name}.pred.stats.tsv'),
     log:
-        notebook=results('analysis/{dataset_name_plus_optional_haplo}.haplotyping_report.py.ipynb')
+        notebook=results('analysis/{dataset_name}.haplotyping_report.py.ipynb')
+    threads: report_resources.threads
     resources:
-        mem_mb=50_000
+        mem_mb=report_resources.mem_mb
     conda:
         get_conda_env('coelsch')
     notebook:

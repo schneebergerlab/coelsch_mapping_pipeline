@@ -1,71 +1,100 @@
 ### PIPELINE INPUT/OUTPUT
 
-# annotation files defined below will be located relative to annotation dir
+{%- set crossing_combinations = crossing_combinations | default(['(col0*ler)']) %}
+{%- set founder_haplotypes = founder_haplotypes | default(parse_founder_haplotypes(crossing_combinations)) %}
+{%- set reference_name = reference_name | default(founder_haplotypes[0]) %}
+{%- set dataset_name = dataset_name | default('example_dataset') %}
+{%- set input_fastq_basename = input_fastq_basename | default(dataset_name) %}
+{%- set technology = technology | default('10x_rna') %}
+{%- if reference_name not in founder_haplotypes %}
+{{ raise_error('reference_name "' ~ reference_name ~ '" is not one of the founder haplotypes in crossing_combinations: ' ~ founder_haplotypes | join(', ')) }}
+{%- endif %}
+
+# Annotation files defined below are located relative to annotation_dir.
 annotation_dir: "{{ annotation_dir | default('annotations') }}"
+
 annotations:
-    fasta_fns:
-      # a fasta file is required for all genotypes that are listed as either parent1 or parent2
-      # in the datasets section, unless a vcf is provided, in which case only the reference fastas are required
-      {{ parent1_name | default('col0')}}: "{{ parent1_name | default('col0')}}.fa"
-      {{ parent2_name | default('ler')}}: "{{ parent2_name | default('ler')}}.fa"
-    gtf_fns:
-      # a gtf file is required for all genotypes that are listed as reference_genotypes
-      {{ parent1_name | default('col0')}}: "{{ parent1_name | default('col0')}}.gtf"
-    barcode_whitelist_fns:
-      # barcode whitelists for various single cell data types
-      {{ single_cell_method | default('10x_rna_v4') }}: {{ barcode_whitelist_fns }}
-    vcf_fns:
-      # if supplied, vcf_fns switch off variant identification from whole genome alignment
-      # one vcf should be supplied per reference_genotype (listed in datasets)
-      # the vcfs should have haploid samples with the same names as the non-reference parent1/parent2 genotypes
-      {{ reference_genotype | default('col0')}}: null
-    mask_bed_fns:
-      # if supplied, this bed file contains regions that will be masked during marker cleaning for coelsch.
-      # useful if locations of noise markers, e.g. centromeres, are known
-      {{ reference_genotype | default('col0')}}: null
+  fasta_fns:
+    # FASTA files are required for all founder haplotypes in crossing_combinations.
+    # Defaults are "<haplotype>.fa".
+{{ format_founder_fasta_fns(founder_haplotypes) }}
+
+  gtf_fns:
+    # A GTF is required for each reference genotype used for mapping.
+    {{ reference_name }}: "{{ reference_name }}.gtf"
+
+  barcode_whitelist_fns:
+    # Barcode whitelist for the selected technology.
+    {{ technology }}: {{ barcode_whitelist_fns | default("['3M-3pgex-may-2023.txt']" if technology == '10x_rna' else 'null') }}
+
+  vcf_fns:
+    # Optional VCFs for precomputed variants. If null, variants are generated
+    # from founder FASTAs where required.
+    {{ reference_name }}: null
+
+  mask_bed_fns:
+    # Optional BED file of regions to mask during marker cleaning for coelsch.
+    {{ reference_name }}: null
 
 
-# input fastq files will be searched for within this directory
-raw_data_dir: "{{ raw_data_dir | default('raw_data')}}"
+# Input FASTQ files are searched for within this directory.
+raw_data_dir: "{{ raw_data_dir | default('raw_data') }}"
 
-# results will be created within this dir
-results_dir: "{{ results_dir |  default('results')}}"
+# Results are created within this directory.
+results_dir: "{{ results_dir | default('results') }}"
 
-# sample ids and sample specific information
+# Sample IDs and sample-specific information.
 datasets:
-  {{ dataset_name | default('example_dataset') }}:
-    # the type of sequencing technology used.
-    # Can be one of "10x_rna_v3", "10x_rna_v4", "10x_atac", "bd_rna", "takara_dna", "plate_wgs"
-    # NB: "takara_dna" and "plate_wgs" trigger a different method, where each barcode/cell/individual is in a separate fastq file
-    # NB: datasets from "10x_rna_v3", "10x_rna_v4", "10x_atac", "bd_rna" can be mixed in same pipeline run, but 
-    # NB: "takara_dna" and "plate_wgs" require their own separate runs 
-    technology: "{{ single_cell_method | default('10x_rna_v4')}}"
-    # the expected ploidy of each individual. Can be "haploid_f1", "haploid_f1*f1", "diploid_bc1", "diploid_f2", or "diploid_f1*f1"
-    # NB: when mode is "diploid_f1*f1", only one genotype can be provided, and four parents must be provided
-    # NB: when mode is "haploid_f1*f1", only one genotype can be provided, and parent1 and parent2 should be json files containing the recombinant haplotypes of the parents
-    ploidy: "haploid"
-    # the genotype used as the reference genome in mapping
-    reference_genotype: "{{ reference_genotype | default('col0')}}"
-    input_file_basenames: 
-      # the base names of the files that will be considered part of this sample 
-      # useful for when a sample is split across multiple lanes & therefore fastqs
-      # e.g. will be located at "{{ raw_data_dir | default('raw_data')}}/"{{ dataset_name | default('example_dataset') }}_1".1.fastq.gz"
-      - "{{ dataset_name | default('example_dataset') }}_1"
-      - "{{ dataset_name | default('example_dataset') }}_2"
-      # glob wildcards can also be used to include multiple files at once e.g.:
-      # - "{{ dataset_name | default('example_dataset') }}_*"
+  {{ dataset_name }}:
+    # Sequencing technology preset passed to coelsch --seq-type.
+    # Choices: 10x_rna, 10x_atac, bd_rna, bd_atac, takara_dna, wgs, other
+    technology: "{{ technology }}"
 
-    genotypes:
-      # you can add one or more different genotypes that have been pooled in the dataset
-      {{ dataset_genotype_name | default('col0xler')}}:
-        founder_haplotypes:
-          parent1: "{{ parent1_name | default('col0')}}"
-          parent2: "{{ parent2_name | default('ler')}}"
-          #parent3: null # uncomment and add if using "diploid_f1*f1" or "haploid_f1*f1" ploidy modes
-          #parent4: null # crossing strategy will be assumed to be (parent1 * parent2) * (parent3 * parent4)
-        recombinant_haplotypes:
-          parent12: null # add a file path if using "haploid_f1*f1" ploidy mode
-          parent34: null # these should be coelsch pred json files containing the recombinant haplotypes
+    # Unit represented by each barcode/sample.
+    # Choices: auto, single_cell, bulk
+    sample_unit: "{{ sample_unit | default('auto') }}"
+
+    # Biological stage of the sampled material.
+    # Choices: gametes, progeny
+    lifecycle_stage: "{{ lifecycle_stage | default('gametes') }}"
+
+    # Experimental crossing design.
+    # Choices: f1, f2, backcross, testcross, three_way, four_way
+    # This is explicit because a genotype expression may be ambiguous without
+    # lifecycle context, e.g. "(A*B)" can be F1 gametes or F2 progeny.
+    crossing_strategy: "{{ crossing_strategy | default('f1') }}"
+
+    # Genotyping mode.
+    # Choices: auto, founder, recombinant
+    # auto uses recombinant mode when recombinant_parent_jsons is supplied.
+    genotyping_strategy: "{{ genotyping_strategy | default('auto') }}"
+
+    # Genotype expressions passed directly to coelsch --crossing-combinations.
+    # Multiple entries are allowed for pooled-cross datasets.
+    # Examples:
+    #   f1:         "(col0*ler)"
+    #   f2:         "(col0*ler)"
+    #   backcross:  "(col0*(col0*ler))"
+    #   testcross:  "(col0*(ler*cvi0))"
+    #   three_way:  "((col0*ler)*(col0*cvi0))"
+    #   four_way:   "((c24*tsu0)*(cvi0*no0))"
+    crossing_combinations:
+{{ format_crossing_combinations(crossing_combinations) }}
+
+    # Reference genotype used for mapping. Must be one of the founder haplotypes
+    # in crossing_combinations.
+    reference_genotype: "{{ reference_name }}"
+
+    # Optional PredictionRecords JSONs used for recombinant genotyping. This may
+    # contain one diploid parental prediction file or two haploid parent files.
+    recombinant_parent_jsons: []
+
+    input_file_basenames:
+      # Base names of files considered part of this dataset. Files are located
+      # under raw_data_dir and combined with file_suffixes below.
+      - "{{ input_fastq_basename }}"
+      # Glob wildcards can also be used, e.g.:
+      # - "{{ dataset_name }}_*"
 
 
 file_suffixes:
@@ -75,18 +104,110 @@ file_suffixes:
   barcode_rc: ".bc_rc.fastq.gz" # file containing the reverse complemented 10x ATAC barcode sequences
                                 # (this is autogenerated if required, see preprocessing)
 
+runtime:
+  # Optional scratch directory for temporary files. If null, rules use $TMPDIR
+  # where available, otherwise /tmp.
+  tmpdir: null
 
-# the pipeline ships with env_yamls that will be installed by snakemake
-# if you prefer to supply your own yamls or use other pre-installed environments for certain steps,
-# you can use this section to override them.
-conda_envs:
-  genmap: null # environment used for rules involving genmap, requires genmap, bedtools, samtools
-  minimap2: null # environment used for rules involving minimap2, requires minimap2, samtools
-  htslib: null # environment used for rules involving samtools/bcftools/bgzip/tabix
-  seqtk: null # environment used for rules involving seqtk
-  msyd: null # environment used for rules involving syri and msyd (see https://github.com/schneebergerlab)
-  star: null # environment used for rules involving STAR, requires STAR=2.7.11a
-  coelsch: null # environment used for rules involving coelsch, also requires seaborn, ipykernel, nbconvert
+  # the pipeline ships with env_yamls that will be installed by snakemake 
+  # if you prefer to supply your own yamls or use other pre-installed environments for certain steps,
+  # you can use this section to override them.
+  conda_envs:
+    genmap: null # environment used for rules involving genmap, requires genmap, bedtools, samtools
+    minimap2: null # environment used for rules involving minimap2, requires minimap2, samtools
+    htslib: null # environment used for rules involving samtools/bcftools/bgzip/tabix
+    seqtk: null # environment used for rules involving seqtk
+    msyd: null # environment used for rules involving syri and msyd (see https://github.com/schneebergerlab)
+    star: null # environment used for rules involving STAR, requires STAR=2.7.11a
+    coelsch: null # environment used for rules involving coelsch, also requires seaborn, ipykernel, nbconvert
+
+
+  # Rule resources. Each entry supports:
+  #   threads: number of threads requested by the rule
+  #   mem_mb: fixed total memory in MB
+  #   mem_per_thread: memory in MB per thread
+  # If mem_per_thread is set, it overrides mem_mb.
+  resources:
+    default:
+      threads: 4
+      mem_mb: 8000
+
+    mappability:
+      threads: 16
+      mem_per_thread: 1024
+
+    minimap2:
+      threads: 12
+      mem_per_thread: 1024
+
+    syri:
+      threads: 1
+      mem_mb: 5000
+
+    bedtools:
+      threads: 1
+      mem_mb: 5000
+
+    bcftools:
+      threads: 1
+      mem_mb: 5000
+
+    seqtk:
+      threads: 1
+      mem_mb: 4000
+
+    star:
+      index:
+        threads: 12
+        mem_per_thread: 1024
+
+      align:
+        plate:
+          threads: 6
+          mem_per_thread: 2048
+
+        droplet:
+          threads: 24
+          mem_per_thread: 2048
+
+    samtools:
+      sort:
+        threads: 12
+        mem_mb: 20000
+
+      view: # for rules filtering reads
+        threads: 4
+        mem_mb: 20000
+
+      merge:
+        sample: # for a single sample/barcode in a plate wgs dataset
+          threads: 4
+          mem_per_thread: 1024
+
+        dataset: # for a full single cell or merged plate-based dataset
+          threads: 24
+          mem_per_thread: 1024
+
+      dedup:
+        threads: 12
+        mem_mb: 10000
+
+    coelsch:
+      loadbam:
+        threads: 48
+        mem_mb: 150000
+
+      clean:
+        threads: 1
+        mem_mb: 50000
+
+      predict:
+        threads: 48
+        mem_mb: 150000
+
+    haplotyping_report:
+      threads: 1
+      mem_mb: 50000
 
 
 ### PIPELINE PARAMS:
@@ -101,44 +222,72 @@ variants:
     edit_dist: 2 # number of edits allowed between kmers to consider them the same
     min_mappability: 0.51 # the min mappability to keep variants in - others are removed
     mask_gap_size: 500 # min number of basepairs between two low mappability regions before they are merged together
+
   minimap2:
-    preset: "asm10"
+    preset: "asm10" # the preset used for whole genome alignment. see minimap manual
     zdrop: "500" # can be a single int or pair of ints, see minimap manual
+
   syri:
     use_low_qual_filters: False # whether to use syris default filtering
+
   star_consensus:
     max_hdr_length: 0 # the maximum size of syri HDRs to try to resolve to snps/indels
-    max_indel_size: 50
+    max_indel_size: 50 # indels above this length are not used. Setting this higher than read length may cause instability
 
 alignment:
   star:
     sjdb_overhang_length: null # add an int. If null, will be identified from the data
     genome_sa_index_nbases: null # add an int. If null, will be identified from the data
-    filter_multimap_nmax: 1
-    filter_mismatch_nmax: 4
+    filter_multimap_nmax: 1 # removes alignments that multimap more than this many times
+    filter_mismatch_nmax: 4 # removes alignments with more than this many mismatches
+
     rna:
-      umi_dedup_method: "1MM_Directional_UMItools"
+      umi_dedup_method: "1MM_Directional_UMItools" # Method used for deduplication of unique molecular identifiers
       align_intron_min: 60
       align_intron_max: 20000
-      align_sj_overhang_min: 12
-      align_sjdb_overhang_min: 4
+      align_sj_overhang_min: 12 # how much sequence is required to align after an unannotated splice junction
+      align_sjdb_overhang_min: 4 # how much sequence is required to align after a splice junction annotated in GTF
+
     atac:
-      mates_gap_max: 500
+      mates_gap_max: 500 # the maximum insert size (distance between aligned paired ended reads)
 
 haplotyping:
-  preprocessing:
-    filter_pcr_duplicates: False # this is only used for data that does not have UMIs
-    min_informative_reads_per_barcode: 100 # The min number of reads that uniquely distinguish the two haplotypes that a barcode must have
-    min_informative_reads_per_chrom: 20 # The min number of haplotype-distinguishing reads per-barcode/sample per-chromosome
-    min_genotyping_probability: 0.9 # The minimum probability for the assigned genotype (when multiple genotypes are pooled in a dataset).
-    max_genotyping_error_rate: 0.25 # The maximum error/noise rate estimated during genotyping.
-    max_fraction_background: 0.25 # the maximum error/noise rate estimated during haplotyping.
-    max_marker_imbalance: 0.75 # The maximum marker imbalance between the two haplotypes allowed in each bin (across the whole dataset), before the bin is masked
-                               # NB this value should be increased when strong genuine segregation distortion is observed
-    
-    
-  coelsch:
-    genomic_bin_size: 25_000 # Bin size for marker distribution
-    segment_size: 1_000_000 # rfactor of the rigid HMM. Approximately controls minimum distance between COs
-    terminal_segment_size: 50_000 # terminal rfactor of the rigid HMM. approx. controls min distance of COs from chromosome ends
-    cm_per_mb: 4.5 # the expected crossover frequency in centiMorgans per megabase - used to parametrise the rHMM
+  load:
+    min_alignment_score: 0.95 # only reads with length-normalised alignment score above this value are used
+    min_mapq: null # optional minimum MAPQ for reads used as haplotype markers
+    exclude_contigs: null # comma-separated contig names to exclude; null uses coelsch defaults
+    validate_barcodes: auto # choices: auto, true, false. auto should be resolved from technology/sample_unit
+
+  clean:
+    min_markers_per_barcode: 100 # minimum informative markers required per barcode/sample
+    min_markers_per_chrom: 20 # minimum informative markers required per chromosome per barcode/sample
+    min_genotyping_probability: 0.9 # minimum probability for assigned genotype in pooled-genotype datasets
+    max_genotyping_error_rate: 0.25 # maximum background/error rate inferred during genotyping
+    normalise_bins: true # normalise bin coverage to reduce marker density/expression biases
+    bin_shrinkage_quantile: 0.99 # quantile used when computing bin-normalisation shrinkage
+    normalise_depth: auto # choices: auto, true, false. auto should be resolved from sample_unit/technology
+    max_bin_count: null # optional maximum markers per barcode/sample per bin; higher values are thresholded
+    mask_imbalanced: true # whether to mask bins with extreme haplotype imbalance
+    max_marker_imbalance: 0.75 # maximum allowed global haplotype/bin imbalance before masking
+    clean_by_genotype: false # whether to apply cleaning separately to each assigned genotype
+
+    single_cell:
+      clean_background: true # whether to estimate and remove background markers
+      max_fraction_background: 0.5 # maximum allowed estimated background marker rate before filtering
+
+    bulk:
+      filter_pcr_duplicates: false # used only for data without UMIs
+
+  predict:
+    genomic_bin_size: 25000 # bin size for marker distribution
+    segment_size: 1000000 # approximate minimum distance between crossovers in the rigid HMM
+    terminal_segment_size: 250000 # approximate minimum distance of crossovers from chromosome ends
+    cm_per_mb: 4.5 # expected crossover frequency in centiMorgans per megabase
+    interference_half_life: 5000 # distance below segment_size where recombination rate halves exponentially
+    distribution_type: poisson # choices: poisson, nb
+    sample_co_locs: true # sample stochastic crossover locations for each barcode/sample
+    n_samples: 25 # number of stochastic crossover-location samples per barcode/sample
+    predict_doublets: auto # choices: auto, true, false. auto disables for bulk datasets
+    n_doublets: 1000 # number of synthetic doublets to simulate when doublet prediction is enabled
+    nco_min_prob_change: 0.0025 # minimum probability change used when estimating crossover counts
+    batch_size: 128 # batch size for prediction

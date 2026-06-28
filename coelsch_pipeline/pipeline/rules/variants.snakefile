@@ -1,3 +1,18 @@
+def geno_group_members(wc):
+    return wc.geno_group.split('_')
+
+
+def geno_group_ref(wc):
+    return geno_group_members(wc)[0]
+
+
+def geno_group_qrys(wc):
+    return geno_group_members(wc)[1:]
+
+
+mappability_resources = rule_resources('mappability')
+
+
 rule mappability:
     ''''''
     input:
@@ -8,12 +23,14 @@ rule mappability:
         fasta=annotation('{geno}.softmasked.fa'),
         fai=annotation('{geno}.softmasked.fa.fai'),
     params:
-        kmer_size=config['variants']['mappability']['kmer_size'],
-        edit_dist=config['variants']['mappability']['edit_dist'],
-        min_mappability=config['variants']['mappability']['min_mappability'],
-        mask_gap_size=config['variants']['mappability']['mask_gap_size'],
+        kmer_size=cfg.variants.mappability.kmer_size,
+        edit_dist=cfg.variants.mappability.edit_dist,
+        min_mappability=cfg.variants.mappability.min_mappability,
+        mask_gap_size=cfg.variants.mappability.mask_gap_size,
         bedgraph_prefix=lambda wc: annotation(f'{wc.geno}.mappability')
-    threads: 16
+    threads: mappability_resources.threads
+    resources:
+        mem_mb=mappability_resources.mem_mb,
     conda:
         get_conda_env('genmap')
     shell:
@@ -42,6 +59,9 @@ rule mappability:
         ''')
 
 
+minimap2_resources = rule_resources('minimap2')
+
+
 rule minimap2_wga:
     '''align two chromosome-scale genome assemblies with minimap2 for analysis with syri'''
     input:
@@ -49,13 +69,12 @@ rule minimap2_wga:
         qry=annotation('{qry}.softmasked.fa'),
     output:
         annotation('wga/{ref}.{qry}.bam')
-    threads:
-        12
+    threads: minimap2_resources.threads
     resources:
-        mem_mb=lambda wc, threads: 1024 * threads,
+        mem_mb=minimap2_resources.mem_mb,
     params:
-        preset=config['variants']['minimap2']['preset'],
-        zdrop=config['variants']['minimap2']['zdrop'],
+        preset=cfg.variants.minimap2.preset,
+        zdrop=cfg.variants.minimap2.zdrop,
     conda:
         get_conda_env('minimap2')
     shell:
@@ -71,6 +90,9 @@ rule minimap2_wga:
         ''')
 
 
+syri_resources = rule_resources('syri')
+
+
 rule run_syri:
     '''use syri to convert a wga of two genome assemblies into a  vcf file of synteny, as well as snps/indels'''
     input:
@@ -80,12 +102,13 @@ rule run_syri:
     output:
         vcf=annotation('vcf/syri/{ref}.{qry}.syri.vcf'),
         syri=annotation('vcf/syri/{ref}.{qry}.syri.out'),
+    threads: syri_resources.threads
     resources:
-        mem_mb=5_000,
+        mem_mb=syri_resources.mem_mb,
     conda:
-        get_conda_env('msyd')
+        get_conda_env('syri')
     params:
-        filter_alns='' if config['variants']['syri']['use_low_qual_filters'] else '-f',
+        filter_alns='' if cfg.variants.syri.use_low_qual_filters else '-f',
         out_dir=annotation('vcf/syri')
     shell:
         format_command('''
@@ -100,6 +123,9 @@ rule run_syri:
         ''')
 
 
+bedtools_resources = rule_resources('bedtools')
+
+
 rule get_whitelist_regions:
     '''find suitable syntentic and inverted regions that can be used for colinear marker analysis'''
     input:
@@ -109,8 +135,9 @@ rule get_whitelist_regions:
         bed=temp(annotation('bed/{ref}.{qry}.syri.bed')),
         blacklist=temp(annotation('bed/{ref}.{qry}.blacklist.bed')),
         whitelist=annotation('bed/{ref}.{qry}.whitelist.bed'),
+    threads: bedtools_resources.threads
     resources:
-        mem_mb=5_000,
+        mem_mb=bedtools_resources.mem_mb,
     conda:
         get_conda_env('genmap')
     shell:
@@ -133,7 +160,8 @@ rule get_whitelist_regions:
 
 
 def full_whitelist_input(wc):
-    ref, *qry_names = wc.geno_group.split('_')
+    ref = geno_group_ref(wc)
+    qry_names = geno_group_qrys(wc)
     return {
         'beds': expand(annotation('bed/{ref}.{qry}.whitelist.bed'), ref=ref, qry=qry_names),
     }
@@ -144,28 +172,36 @@ rule get_full_dataset_whitelist_regions:
         unpack(full_whitelist_input)
     output:
         bed=annotation('bed/merged/{geno_group}.whitelist.bed'),
+    threads: bedtools_resources.threads
     resources:
-        mem_mb=5_000,
+        mem_mb=bedtools_resources.mem_mb,
     params:
-        nsamples=lambda wc: len(wc.geno_group.split('_')) - 1
+        n_qrys=lambda wc: len(geno_group_qrys(wc))
     conda:
         get_conda_env('genmap')
     shell:
         format_command('''
-        bedtools multiinter -i {input.beds} |
-        awk -v OFS='\t' '
-          $4 == {params.nsamples} && (($3 - $2) > 50) {{print $1, $2, $3}}
-        ' > {output.bed}
+        if [ {params.n_qrys} -eq 1 ]; then
+          awk -v OFS='\t' '(($3 - $2) > 50) {{print $1, $2, $3}}' {input.beds};
+        else
+          bedtools multiinter -i {input.beds} |
+          awk -v OFS='\t' '
+            $4 == {params.n_qrys} && (($3 - $2) > 50) {{print $1, $2, $3}}
+            ';
+        fi > {output.bed};
         ''')
 
 
 def filter_syri_vcf_input(wc):
-    ref, *_ = wc.geno_group.split('_')
+    ref = geno_group_ref(wc)
     return {
-        'vcf': expand(annotation('vcf/syri/{ref}.{qry}.syri.vcf'), ref=ref, qry=wc.qry),
-        'bed': expand(annotation('bed/merged/{geno_group}.whitelist.bed'), geno_group=wc.geno_group),
+        'vcf': annotation(f'vcf/syri/{ref}.{wc.qry}.syri.vcf'),
+        'bed': annotation(f'bed/merged/{wc.geno_group}.whitelist.bed'),
         'fasta': annotation(f'{ref}.softmasked.fa')
     }
+
+
+bcftools_resources = rule_resources('bcftools')
 
 
 rule filter_syri_vcf:
@@ -173,8 +209,13 @@ rule filter_syri_vcf:
         unpack(filter_syri_vcf_input)
     output:
         vcf=annotation('vcf/star_consensus/syri/{geno_group}.{qry}.vcf')
+    threads: bcftools_resources.threads
+    resources:
+        mem_mb=bcftools_resources.mem_mb,
     params:
-        max_indel_size=config['variants']['star_consensus']['max_indel_size'],
+        max_indel_size=cfg.variants.star_consensus.max_indel_size,
+    conda:
+        get_conda_env('htslib')
     shell:
         format_command(r'''
         bcftools filter -i 'INFO/VarType=="ShV" && ALT !~ "<"' 
@@ -191,11 +232,14 @@ rule filter_syri_vcf:
 
 def extract_sample_vcf_input(wc):
     vcf_fns = config['annotations']['vcf_fns']
-    ref, *qry_names = wc.geno_group.split('_')
+    ref = geno_group_ref(wc)
     return {
         'vcf': ancient(annotation(vcf_fns[ref])),
         'fasta': annotation(f'{ref}.softmasked.fa')
     }
+
+
+extract_sample_vcf_resources = rule_resources('bcftools')
 
 
 rule extract_sample_vcf:
@@ -205,8 +249,13 @@ rule extract_sample_vcf:
         vcf=annotation('vcf/star_consensus/user_defined/{geno_group}.{qry}.vcf'),
     conda:
         get_conda_env('htslib')
+    threads: bcftools_resources.threads
+    resources:
+        mem_mb=bcftools_resources.mem_mb,
     params:
-        max_indel_size=config['variants']['star_consensus']['max_indel_size'],
+        max_indel_size=cfg.variants.star_consensus.max_indel_size,
+    conda:
+        get_conda_env('htslib')
     shell:
         format_command(r'''
         bcftools view 

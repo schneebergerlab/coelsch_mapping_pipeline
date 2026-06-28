@@ -1,8 +1,13 @@
 from coelsch_pipeline.pipeline_utils import (
-    format_command, setup_tmpdir,
+    format_command, setup_tmpdir_getter,
     annotations_getter, raw_data_getter, results_getter,
     fasta_getter, gtf_getter, barcode_whitelist_getter,
-    conda_env_getter
+    conda_env_getter,
+    parse_crossing_combinations,
+    founder_haplotypes_from_crossing_combinations,
+    config_namespace,
+    bool_flag, auto_bool_flag, optional_flag, format_params,
+    dataset_getter, rule_resources_getter,
 )
 
 
@@ -13,29 +18,35 @@ get_fasta = fasta_getter(config)
 get_gtf = gtf_getter(config)
 get_barcode_whitelist = barcode_whitelist_getter(config)
 get_conda_env = conda_env_getter(config)
+cfg = config_namespace(config)
+dataset = dataset_getter(cfg)
+rule_resources = rule_resources_getter(cfg)
+setup_tmpdir = setup_tmpdir_getter(cfg)
 
 
 ref_genotypes = set()
 genotypes = set()
-for ds in config['datasets'].values():
-    ref_genotypes.add(ds['reference_genotype'])
-    for geno in ds['genotypes'].values():
-        genotypes.update(list(geno['founder_haplotypes'].values()))
+for dataset_name in cfg.datasets:
+    ds = dataset(dataset_name)
+    ref_genotypes.add(ds.reference_genotype)
+    genotypes.update(
+        founder_haplotypes_from_crossing_combinations(
+            ds.crossing_combinations
+        )
+    )
 
 
 wildcard_constraints:
     dataset_name='|'.join(config['datasets']),
-    haplo='hap1|hap2',
-    dataset_name_plus_optional_haplo='(?:' + '|'.join(config['datasets']) + ')(?:_hap[12])?',
     sample_name=r'\w+',
     ref='|'.join(ref_genotypes),
     qry='|'.join(genotypes),
     geno='|'.join(genotypes),
 
 
-tech_types = set([ds['technology'] for ds in config['datasets'].values()])
-is_plate_based = tech_types.intersection(['takara_dna', 'plate_wgs'])
-is_droplet_based = tech_types.intersection(['10x_rna_v4', '10x_rna_v3', 'bd_rna', '10x_atac'])
+tech_types = {dataset(dataset_name).technology for dataset_name in cfg.datasets}
+is_plate_based = tech_types.intersection(['takara_dna', 'wgs'])
+is_droplet_based = tech_types.intersection(['10x_rna', '10x_atac', 'bd_rna', 'bd_atac'])
 if is_plate_based and is_droplet_based:
     raise ValueError('Cannot mix droplet and plate technologies in the same run, please separate to different configs.')
 
@@ -50,22 +61,13 @@ include: "rules/haplotype.snakefile"
 
 def all_results():
     result_fns = []
-    for dataset_name, ds_conf in config['datasets'].items():
-        if ds_conf['ploidy'] != 'diploid_f1*f1':
-            result_fns += expand(
-                [results('haplotypes/{dataset_name}.{file_type}.json'),
-                 results('analysis/{dataset_name}.haplotyping_report.py.ipynb')],
-                dataset_name=dataset_name,
-                file_type=['markers_init', 'markers_filt', 'pred'],
-            )
-        else:
-            result_fns += expand(
-                [results('haplotypes/{dataset_name}_{haplo}.{file_type}.json'),
-                 results('analysis/{dataset_name}_{haplo}.haplotyping_report.py.ipynb')],
-                dataset_name=dataset_name,
-                haplo=['hap1', 'hap2'],
-                file_type=['markers_init', 'markers_filt', 'pred'],
-            )
+    for dataset_name in cfg.datasets:
+        result_fns += expand(
+            [results('haplotypes/{dataset_name}.{file_type}.json'),
+             results('analysis/{dataset_name}.haplotyping_report.py.ipynb')],
+            dataset_name=dataset_name,
+            file_type=['markers_init', 'markers_filt', 'pred'],
+        )
     return result_fns
 
 

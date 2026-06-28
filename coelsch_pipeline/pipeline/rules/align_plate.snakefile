@@ -11,14 +11,13 @@ def STAR_consensus_input(wc):
       - read, mate: the fastq files for the sample - represents a single individual/barcode
     '''
     dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
-    dataset = config['datasets'][dataset_name]
-    tech_type = dataset['technology']
-    ref_name = dataset['reference_genotype']
+    ds = dataset(dataset_name)
+    ref_name = ds.reference_genotype
     geno_group = get_geno_group(dataset_name)
     return {
         'index': annotation(f'star_indexes/{geno_group}/{ref_name}.{{qry}}.star_idx'),
-        'read': raw_data(f'{{sample_name}}{config["file_suffixes"]["read1"]}'),
-        'mate': raw_data(f'{{sample_name}}{config["file_suffixes"]["read2"]}'),
+        'read': raw_data(f'{{sample_name}}{cfg.file_suffixes.read1}'),
+        'mate': raw_data(f'{{sample_name}}{cfg.file_suffixes.read2}'),
     }
 
 
@@ -35,12 +34,14 @@ def get_readfiles_cmd(wc, input):
 def get_transform_flag(wc):
     '''STAR genome transform flag - necessary if index has a VCF transformation'''
     dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
-    dataset = config['datasets'][dataset_name]
-    ref = dataset['reference_genotype']
+    ref = dataset(dataset_name).reference_genotype
     if wc.qry != ref:
         return '--genomeTransformOutput "SAM"'
     else:
         return ''
+
+
+star_align_resources = rule_resources('star/align/plate')
 
 
 rule STAR_consensus:
@@ -55,16 +56,16 @@ rule STAR_consensus:
     params:
         readfiles_cmd=get_readfiles_cmd,
         transform_flag=get_transform_flag,
-        filter_multimap_nmax=config['alignment']['star']['filter_multimap_nmax'],
-        filter_mismatch_nmax=config['alignment']['star']['filter_mismatch_nmax'],
-        align_mates_gap_max=config['alignment']['star']['atac']['mates_gap_max'],
+        filter_multimap_nmax=cfg.alignment.star.filter_multimap_nmax,
+        filter_mismatch_nmax=cfg.alignment.star.filter_mismatch_nmax,
+        align_mates_gap_max=cfg.alignment.star.atac.mates_gap_max,
     log:
         progress=results('logs/{sample_name}.{qry}.STAR_progress.log'),
         final=results('logs/{sample_name}.{qry}.STAR_final.log'),
         main=results('logs/{sample_name}.{qry}.STAR.log')
-    threads: 6 # usually small files, fewer threads needed than for droplets
+    threads: star_align_resources.threads
     resources:
-        mem_mb=lambda wildcards, threads: (threads + 4) * 2048,
+        mem_mb=star_align_resources.mem_mb,
     conda:
         get_conda_env('star')
     shell:
@@ -100,6 +101,9 @@ rule STAR_consensus:
         ''')
 
 
+samtools_sort_resources = rule_resources('samtools/sort')
+
+
 rule sort_bam_by_name:
     '''
     name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
@@ -109,9 +113,9 @@ rule sort_bam_by_name:
         bai=results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam.bai')
     output:
         bam=temp(results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.namesorted.bam'))
-    threads: 4
+    threads: samtools_sort_resources.threads
     resources:
-        mem_mb=20_000,
+        mem_mb=samtools_sort_resources.mem_mb,
     conda:
         get_conda_env('htslib')
     shell:
@@ -126,15 +130,14 @@ rule sort_bam_by_name:
 def get_merge_haps_input(wc):
     '''Expand all haplotypes that have been aligned to for a sample/barcode to create merge input'''
     dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
-    dataset = config['datasets'][dataset_name]
-    qrys = set()
-    for geno in dataset['genotypes'].values():
-        for qry in geno['founder_haplotypes'].values():
-            qrys.add(qry)
+    qrys = get_dataset_haplotypes(dataset_name)
     return expand(
         results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.namesorted.bam'),
         sample_name=wc.sample_name, qry=qrys
     )
+
+
+samtools_merge_resources = rule_resources('samtools/merge/sample')
 
 
 rule merge_name_sorted_hap_bams:
@@ -145,9 +148,9 @@ rule merge_name_sorted_hap_bams:
         bams=get_merge_haps_input
     output:
         bam=temp(results('aligned_data/single_barcodes/{sample_name}.namesorted.bam')),
-    threads: 4
+    threads: samtools_merge_resources.threads
     resources:
-        mem_mb=lambda wildcards, threads: threads * 1024,
+        mem_mb=samtools_merge_resources.mem_mb,
     conda:
         get_conda_env('htslib')
     shell:
@@ -156,6 +159,9 @@ rule merge_name_sorted_hap_bams:
           -n {output.bam}
           {input.bams};
         ''')
+
+
+collapse_aln_resources = rule_resources('collapse_alignments')
 
 
 rule collapse_alignments:
@@ -170,9 +176,9 @@ rule collapse_alignments:
     output:
         bam=results('aligned_data/single_barcodes/{sample_name}.sorted.bam'),
         bai=results('aligned_data/single_barcodes/{sample_name}.sorted.bam.bai')
+    threads: collapse_aln_resources.threads
     resources:
-        mem_mb=5_000,
-    threads: 4
+        mem_mb=collapse_aln_resources.mem_mb,
     conda:
         get_conda_env('coelsch')
     shell:
@@ -212,6 +218,9 @@ rule list_bam:
             f.write('\n'.join(input.bams))
 
 
+samtools_merge_ds_resources = rule_resources('samtools/merge/dataset')
+
+
 rule merge_bams:
     '''sample-wise barcode merging'''
     input:
@@ -221,7 +230,9 @@ rule merge_bams:
         bai=results('aligned_data/{dataset_name}.sorted.bam.bai'),
     conda:
         get_conda_env('htslib')
-    threads: 24
+    threads: samtools_merge_ds_resources.threads
+    resources:
+        mem_mb=samtools_merge_ds_resources.mem_mb,
     shell:
         format_command('''
         ulimit -n 5000;

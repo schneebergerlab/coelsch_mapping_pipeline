@@ -7,14 +7,20 @@ import itertools as it
 include: './align_common.snakefile'
 
 
+seqtk_resources = rule_resources('seqtk')
+
+
 rule cell_barcode_rc:
     '''reverse complement a fastq file, necessary for some snATAC-seq datasets sequenced on BGI nanoball'''
     input:
-        barcode=raw_data(f'{{sample_name}}{config["file_suffixes"]["barcode"]}'),
+        barcode=raw_data(f'{{sample_name}}{cfg.file_suffixes.barcode}'),
     output:
-        barcode=raw_data(f'{{sample_name}}{config["file_suffixes"]["barcode_rc"]}'),
+        barcode=raw_data(f'{{sample_name}}{cfg.file_suffixes.barcode_rc}'),
+    threads: seqtk_resources.threads
+    resources:
+        mem_mb=seqtk_resources.mem_mb,
     conda:
-        '../env_yamls/seqtk.yaml'
+        get_conda_env('seqtk')
     shell:
         format_command('''
         seqtk seq -r {input.barcode} |
@@ -30,9 +36,9 @@ def STAR_consensus_input(wc):
       - barcode_whitelist: the whitelist file(s) for the sequencing technology type
       - read, mate, barcode: the fastq files for the dataset - contains ALL cells/barcodes
     '''
-    dataset = config['datasets'][wc.dataset_name]
-    tech_type = dataset['technology']
-    ref_name = dataset['reference_genotype']
+    ds = dataset(wc.dataset_name)
+    tech_type = ds.technology
+    ref_name = ds.reference_genotype
     geno_group = get_geno_group(wc.dataset_name)
     barcode_whitelist = get_barcode_whitelist(tech_type)
     if isinstance(barcode_whitelist, str):
@@ -44,7 +50,7 @@ def STAR_consensus_input(wc):
     if tech_type == "10x_atac":
         input_['read'] = get_star_fastq_input(wc.dataset_name, 'read1')
         input_['mate'] = get_star_fastq_input(wc.dataset_name, 'read2')
-        if config['preprocessing']['atac']['rev_comp_barcode']:
+        if cfg.preprocessing.atac.rev_comp_barcode:
             input_['barcode'] = get_star_fastq_input(wc.dataset_name, 'barcode_rc')
         else:
             input_['barcode'] = get_star_fastq_input(wc.dataset_name, 'barcode')
@@ -58,7 +64,7 @@ def get_adapter_parameters(wc, input):
     '''
     Adapter parameters for the different sequencing modalities
     '''
-    tech_type = config['datasets'][wc.dataset_name]['technology']
+    tech_type = dataset(wc.dataset_name).technology
     if tech_type == '10x_atac':
         params = '''
           --soloType "CB_samTagOut"
@@ -99,7 +105,7 @@ def get_adapter_parameters(wc, input):
     params = params.format(
         whitelist=whitelist,
         barcode_read_length=get_read_length(input.barcode[0]),
-        umi_dedup_method=config["alignment"]["star"]["rna"]["umi_dedup_method"],
+        umi_dedup_method=cfg.alignment.star.rna.umi_dedup_method,
     )
 
     return format_command(params.lstrip())
@@ -107,8 +113,7 @@ def get_adapter_parameters(wc, input):
 
 def get_transform_flag(wc):
     '''STAR genome transform flag - necessary if index has a VCF transformation'''
-    dataset = config['datasets'][wc.dataset_name]
-    ref = dataset['reference_genotype']
+    ref = dataset(wc.dataset_name).reference_genotype
     if wc.qry != ref:
         return '--genomeTransformOutput SAM'
     else:
@@ -119,7 +124,7 @@ def get_input_flags(wc, input):
     '''
     create flags for multiple input files, check if they are gzipped and add readFilesCommand
     '''
-    tech_type = config['datasets'][wc.dataset_name]['technology']
+    tech_type = dataset(wc.dataset_name).technology
     all_fastqs = it.chain(*(
         (input.read, input.mate, input.barcode)
         if tech_type == '10x_atac'
@@ -144,7 +149,7 @@ def get_input_flags(wc, input):
 
 def get_spliced_alignment_params(wc):
     '''splicing/fragment size parameters for STAR'''
-    tech_type = config['datasets'][wc.dataset_name]['technology']
+    tech_type = dataset(wc.dataset_name).technology
     if tech_type == "10x_atac":
         params = '''
           --alignIntronMax 1
@@ -159,13 +164,16 @@ def get_spliced_alignment_params(wc):
           --alignIntronMax {align_intron_max}
         '''
     params = params.format(
-        mates_gap_max=config["alignment"]["star"]["atac"]["mates_gap_max"],
-        align_sj_overhang_min=config["alignment"]["star"]["rna"]["align_sj_overhang_min"],
-        align_sjdb_overhang_min=config["alignment"]["star"]["rna"]["align_sjdb_overhang_min"],
-        align_intron_min=config["alignment"]["star"]["rna"]["align_intron_min"],
-        align_intron_max=config["alignment"]["star"]["rna"]["align_intron_max"]
+        mates_gap_max=cfg.alignment.star.atac.mates_gap_max,
+        align_sj_overhang_min=cfg.alignment.star.rna.align_sj_overhang_min,
+        align_sjdb_overhang_min=cfg.alignment.star.rna.align_sjdb_overhang_min,
+        align_intron_min=cfg.alignment.star.rna.align_intron_min,
+        align_intron_max=cfg.alignment.star.rna.align_intron_max
     )
     return format_command(params.lstrip())
+
+
+star_align_resources = rule_resources('star/align/droplet')
 
 
 rule STAR_consensus:
@@ -182,17 +190,17 @@ rule STAR_consensus:
         transform_flag=get_transform_flag,
         adapter_parameters=get_adapter_parameters,
         splicing_parameters=get_spliced_alignment_params,
-        filter_multimap_nmax=config['alignment']['star']['filter_multimap_nmax'],
-        filter_mismatch_nmax=config['alignment']['star']['filter_mismatch_nmax'],
+        filter_multimap_nmax=cfg.alignment.star.filter_multimap_nmax,
+        filter_mismatch_nmax=cfg.alignment.star.filter_mismatch_nmax,
         sort_mem=lambda wc, resources: (resources.mem_mb - 4096) * 1_000_000,
         n_files=lambda wc, threads: threads * 150 + 200,
     log:
         progress=results('logs/{dataset_name}.{qry}.STAR_progress.log'),
         final=results('logs/{dataset_name}.{qry}.STAR_final.log'),
         main=results('logs/{dataset_name}.{qry}.STAR.log')
-    threads: 24
+    threads: star_align_resources.threads
     resources:
-        mem_mb=lambda wildcards, threads: (threads + 4) * 2048,
+        mem_mb=star_align_resources.mem_mb,
     conda:
         get_conda_env('star')
     shell:
@@ -228,6 +236,9 @@ rule STAR_consensus:
         ''')
 
 
+samtools_sort_resources = rule_resources('samtools/sort')
+
+
 rule sort_bam_by_name:
     '''
     name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
@@ -237,10 +248,10 @@ rule sort_bam_by_name:
         bai=results('aligned_data/haploid/{dataset_name}.{qry}.sorted.bam.bai')
     output:
         bam=temp(results('aligned_data/haploid/{dataset_name}.{qry}.namesorted.bam'))
-    threads: 12
+    threads: samtools_sort_resources.threads
     resources:
-        mem_mb=20_000,
-        threads_per_cmd=lambda wc, threads: threads // 2
+        mem_mb=samtools_sort_resources.mem_mb,
+        threads_per_cmd=max(1, samtools_sort_resources.threads // 2)
     conda:
         get_conda_env('htslib')
     shell:
@@ -255,15 +266,14 @@ rule sort_bam_by_name:
 
 def get_merge_input(wc):
     '''Expand all haplotypes that have been aligned to for a dataset to create merge input'''
-    dataset = config['datasets'][wc.dataset_name]
-    qrys = set()
-    for geno in dataset['genotypes'].values():
-        for qry in geno['founder_haplotypes'].values():
-            qrys.add(qry)
+    qrys = get_dataset_haplotypes(wc.dataset_name)
     return {
         'bams': expand(results('aligned_data/haploid/{dataset_name}.{qry}.namesorted.bam'),
                        dataset_name=wc.dataset_name, qry=qrys),
     }
+
+
+samtools_merge_resources = rule_resources('samtools/merge/dataset')
 
 
 rule merge_name_sorted_bams:
@@ -274,9 +284,9 @@ rule merge_name_sorted_bams:
         unpack(get_merge_input)
     output:
         bam=temp(results('aligned_data/{dataset_name}.namesorted.bam')),
-    threads: 24
+    threads: samtools_merge_resources.threads
     resources:
-        mem_mb=lambda wildcards, threads: threads * 1024,
+        mem_mb=samtools_merge_resources.mem_mb,
     conda:
         get_conda_env('htslib')
     shell:
@@ -285,6 +295,9 @@ rule merge_name_sorted_bams:
           {output.bam}
           {input.bams};
         ''')
+
+
+collapse_aln_resources = rule_resources('samtools/sort')
 
 
 rule collapse_alignments:
@@ -297,9 +310,9 @@ rule collapse_alignments:
     output:
         bam=results('aligned_data/{dataset_name}.sorted.bam'),
         bai=results('aligned_data/{dataset_name}.sorted.bam.bai')
+    threads: collapse_aln_resources.threads
     resources:
-        mem_mb=20_000,
-    threads: 12
+        mem_mb=collapse_aln_resources.mem_mb,
     conda:
         get_conda_env('coelsch')
     shell:

@@ -12,9 +12,9 @@ for dataset_name in config['datasets']:
     # use globbing to determine the sample_name -> dataset_name relationship
     for basename_glob in config['datasets'][dataset_name]['input_file_basenames']:
         # create glob.glob style globbing string for identifying files matching the input_file_basenames pattern
-        read1_glob = raw_data(f'{basename_glob}{config["file_suffixes"]["read1"]}')
+        read1_glob = raw_data(f'{basename_glob}{cfg.file_suffixes.read1}')
         # create a snakemake glob_wildcards style glob for extracting the fully expanded sample_names
-        sn_wildcards_read1_glob = raw_data(f'{{sample_name}}{config["file_suffixes"]["read1"]}')
+        sn_wildcards_read1_glob = raw_data(f'{{sample_name}}{cfg.file_suffixes.read1}')
         sample_names = glob_wildcards(sn_wildcards_read1_glob, files=glob(read1_glob)).sample_name
         # add the sample names to the reference mappings
         for sn in sample_names:
@@ -52,10 +52,10 @@ def get_read_length(fastq_fn):
 
 def get_sj_overhang_size(wc):
     '''get the splice junction overhang size for a genome index from the data'''
-    if config['alignment']['star'].get('sjdb_overhang_length') is not None:
-        return config['alignment']['star']['sjdb_overhang_length']
+    if cfg.alignment.star.sjdb_overhang_length is not None:
+        return cfg.alignment.star.sjdb_overhang_length
     fastq_fns = glob(
-        raw_data(f'*{config["file_suffixes"]["read2"]}')
+        raw_data(f'*{cfg.file_suffixes.read2}')
     )[:5] # just check a few random files or this gets slow
     max_overhang = 0
     for fq_fn in fastq_fns:
@@ -67,8 +67,8 @@ def calculate_genome_sa_index_nbases(wc, input):
     '''estimate the suffix array nbases for star from the size of the reference genome'''
     fai_path = str(input.fasta) + '.fai'
     if not os.path.exists(fai_path):
-        if config['alignment']['star'].get('genome_sa_index_nbases') is not None:
-            return config['alignment']['star']['genome_sa_index_nbases']
+        if cfg.alignment.star.genome_sa_index_nbases is not None:
+            return cfg.alignment.star.genome_sa_index_nbases
         try:
             import pysam
             pysam.index(input.fasta)
@@ -85,6 +85,9 @@ def calculate_genome_sa_index_nbases(wc, input):
     return min(14, math.floor(math.log2(total_length) / 2 - 1))
 
 
+star_index_resources = rule_resources('star/index')
+
+
 rule build_STAR_index:
     """
     Builds a STAR genome index for alignment. Uses either reference genome alone, or in conjunction with a 
@@ -94,9 +97,9 @@ rule build_STAR_index:
         unpack(get_star_index_input)
     output:
         directory(annotation('star_indexes/{geno_group}/{ref}.{qry}.star_idx'))
-    threads: 12
+    threads: star_index_resources.threads
     resources:
-        mem_mb=12 * 1024,
+        mem_mb=star_index_resources.mem_mb,
     params:
         overhang=get_sj_overhang_size,
         genome_sa_index_nbases=calculate_genome_sa_index_nbases,
@@ -126,17 +129,18 @@ rule build_STAR_index:
         ''')
 
 
+def get_dataset_haplotypes(dataset_name):
+    '''return founder haplotypes represented by a dataset crossing design.'''
+    ds = dataset(dataset_name)
+    return founder_haplotypes_from_crossing_combinations(ds.crossing_combinations)
+
+
 def get_geno_group(dataset_name):
     '''creates a geno_group wildcard from the config by joining together all the genotypes'''
-    dataset = config['datasets'][dataset_name]
-    ref = dataset['reference_genotype']
-    qry_names = set()
-    for geno in dataset['genotypes'].values():
-        for qry in geno['founder_haplotypes'].values():
-            if qry != ref:
-                qry_names.add(qry)
-    qry_names = '_'.join(sorted(qry_names))
-    return f'{ref}_{qry_names}'
+    ds = dataset(dataset_name)
+    ref = ds.reference_genotype
+    qry_names = sorted(hap for hap in get_dataset_haplotypes(dataset_name) if hap != ref)
+    return '_'.join([ref, *qry_names])
 
 
 def get_star_fastq_input(dataset_name, fastq_type):
@@ -145,5 +149,5 @@ def get_star_fastq_input(dataset_name, fastq_type):
     return expand(
         raw_data('{sample_name}{file_suffix}'),
         sample_name=sample_names,
-        file_suffix=config['file_suffixes'][fastq_type]
+        file_suffix=getattr(cfg.file_suffixes, fastq_type)
     )
