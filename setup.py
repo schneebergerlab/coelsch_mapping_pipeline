@@ -6,7 +6,7 @@ setup(
     description="Pipeline tool for mapping reads for crossover analysis with coelsch",
     author="Matthew Parker",
     author_email="mparker@mpipz.mpg.de",
-    packages=["coelsch_pipeline"],
+    packages=find_packages(),
     install_requires=[
         "click>=8.0",
         "jinja2",

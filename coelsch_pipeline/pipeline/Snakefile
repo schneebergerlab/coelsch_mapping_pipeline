@@ -7,7 +7,7 @@ from coelsch_pipeline.pipeline_utils import (
     founder_haplotypes_from_crossing_combinations,
     config_namespace,
     bool_flag, auto_bool_flag, optional_flag, format_params,
-    dataset_getter, rule_resources_getter,
+    dataset_getter, rule_resources_getter, sample_dataset_map_getter,
 )
 
 
@@ -22,6 +22,7 @@ cfg = config_namespace(config)
 dataset = dataset_getter(cfg)
 rule_resources = rule_resources_getter(cfg)
 setup_tmpdir = setup_tmpdir_getter(cfg)
+sample_dataset_map = sample_dataset_map_getter(config, cfg, raw_data, glob_wildcards)
 
 
 ref_genotypes = set()
@@ -72,5 +73,6 @@ def all_results():
 
 
 rule all:
+    '''Collect the main haplotyping outputs for all configured datasets.'''
     input:
         all_results()

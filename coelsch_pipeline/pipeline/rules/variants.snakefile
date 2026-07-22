@@ -10,11 +10,11 @@ def geno_group_qrys(wc):
     return geno_group_members(wc)[1:]
 
 
-mappability_resources = rule_resources('mappability')
+mappability_resources = rule_resources('genmap')
 
 
 rule mappability:
-    ''''''
+    '''Soft-mask low-mappability regions in each founder reference genome.'''
     input:
         fasta=lambda wc: get_fasta(wc.geno),
         fai=lambda wc: get_fasta(wc.geno) + '.fai',
@@ -63,7 +63,7 @@ minimap2_resources = rule_resources('minimap2')
 
 
 rule minimap2_wga:
-    '''align two chromosome-scale genome assemblies with minimap2 for analysis with syri'''
+    '''Align founder genome assemblies for structural variant calling with SyRI.'''
     input:
         ref=annotation('{ref}.softmasked.fa'),
         qry=annotation('{qry}.softmasked.fa'),
@@ -94,7 +94,7 @@ syri_resources = rule_resources('syri')
 
 
 rule run_syri:
-    '''use syri to convert a wga of two genome assemblies into a  vcf file of synteny, as well as snps/indels'''
+    '''Call syntenic regions and variants from a whole-genome alignment.'''
     input:
         ref=annotation('{ref}.softmasked.fa'),
         qry=annotation('{qry}.softmasked.fa'),
@@ -127,7 +127,7 @@ bedtools_resources = rule_resources('bedtools')
 
 
 rule get_whitelist_regions:
-    '''find suitable syntentic and inverted regions that can be used for colinear marker analysis'''
+    '''Create pairwise syntenic whitelist regions for marker selection.'''
     input:
         vcf=annotation('vcf/syri/{ref}.{qry}.syri.vcf'),
         fai=annotation('{ref}.softmasked.fa.fai'),
@@ -168,6 +168,7 @@ def full_whitelist_input(wc):
 
 
 rule get_full_dataset_whitelist_regions:
+    '''Merge pairwise whitelist regions across all query founders in a cross.'''
     input:
         unpack(full_whitelist_input)
     output:
@@ -205,6 +206,7 @@ bcftools_resources = rule_resources('bcftools')
 
 
 rule filter_syri_vcf:
+    '''Filter SyRI variants to SNPs and short indels in whitelisted regions.'''
     input:
         unpack(filter_syri_vcf_input)
     output:
@@ -239,16 +241,12 @@ def extract_sample_vcf_input(wc):
     }
 
 
-extract_sample_vcf_resources = rule_resources('bcftools')
-
-
 rule extract_sample_vcf:
+    '''Extract one founder sample from a user-provided variant VCF.'''
     input:
         unpack(extract_sample_vcf_input)
     output:
         vcf=annotation('vcf/star_consensus/user_defined/{geno_group}.{qry}.vcf'),
-    conda:
-        get_conda_env('htslib')
     threads: bcftools_resources.threads
     resources:
         mem_mb=bcftools_resources.mem_mb,

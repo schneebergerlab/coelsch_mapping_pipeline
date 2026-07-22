@@ -8,7 +8,7 @@ samtools_markdup_resources = rule_resources('samtools/dedup')
 
 
 rule remove_pcr_duplicates:
-    '''filter out PCR duplicates in single-cell ATAC libraries'''
+    '''Remove PCR duplicates from non-UMI BAMs when configured.'''
     input:
         bam=results('aligned_data/{dataset_name}.sorted.bam'),
         bai=results('aligned_data/{dataset_name}.sorted.bam.bai'),
@@ -57,6 +57,7 @@ filter_reads_resources = rule_resources('samtools/view')
 
 
 rule filter_informative_reads:
+    '''Keep informative haplotype-tagged reads and create an initial barcode whitelist.'''
     input:
         unpack(filter_input)
     output:
@@ -246,6 +247,7 @@ coelsch_loadbam_resources = rule_resources('coelsch/loadbam')
 
 
 rule run_loadbam:
+    '''Load a haplotype-tagged BAM into an initial MarkerRecords JSON.'''
     input:
         unpack(get_load_input)
     output:
@@ -277,6 +279,7 @@ coelsch_clean_resources = rule_resources('coelsch/clean')
 
 
 rule run_clean:
+    '''Filter, mask and normalise MarkerRecords before prediction.'''
     input:
         unpack(get_clean_input)
     output:
@@ -305,6 +308,7 @@ coelsch_predict_resources = rule_resources('coelsch/predict')
 
 
 rule run_predict:
+    '''Infer haplotype probabilities and crossovers from cleaned MarkerRecords.'''
     input:
         markers=results('haplotypes/{dataset_name}.markers_filt.json')
     output:
@@ -336,6 +340,7 @@ report_resources = rule_resources('haplotyping_report')
 
 
 rule haplotyping_report:
+    '''Render the dataset haplotyping report notebook.'''
     input:
         markers_init=results('haplotypes/{dataset_name}.markers_init.json'),
         markers_filt=results('haplotypes/{dataset_name}.markers_filt.json'),

@@ -1,6 +1,5 @@
 import math
 import gzip
-from glob import glob
 import itertools as it
 
 
@@ -11,7 +10,7 @@ seqtk_resources = rule_resources('seqtk')
 
 
 rule cell_barcode_rc:
-    '''reverse complement a fastq file, necessary for some snATAC-seq datasets sequenced on BGI nanoball'''
+    '''Reverse-complement ATAC barcode reads when required by the technology.'''
     input:
         barcode=raw_data(f'{{sample_name}}{cfg.file_suffixes.barcode}'),
     output:
@@ -177,9 +176,7 @@ star_align_resources = rule_resources('star/align/droplet')
 
 
 rule STAR_consensus:
-    '''
-    map reads for a single-cell dataset using STARsolo and a VCF-transformed genome index.
-    '''
+    '''Align droplet reads to one founder-specific STAR consensus genome.'''
     input:
         unpack(STAR_consensus_input)
     output:
@@ -240,9 +237,7 @@ samtools_sort_resources = rule_resources('samtools/sort')
 
 
 rule sort_bam_by_name:
-    '''
-    name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
-    '''
+    '''Name-sort and fixmate one founder-specific droplet alignment BAM.'''
     input:
         bam=results('aligned_data/haploid/{dataset_name}.{qry}.sorted.bam'),
         bai=results('aligned_data/haploid/{dataset_name}.{qry}.sorted.bam.bai')
@@ -277,9 +272,7 @@ samtools_merge_resources = rule_resources('samtools/merge/dataset')
 
 
 rule merge_name_sorted_bams:
-    '''
-    merge all haplotype-specific alignments into a single name-sorted bam file for haplotype collapsing
-    '''
+    '''Merge founder-specific name-sorted BAMs before haplotype collapsing.'''
     input:
         unpack(get_merge_input)
     output:
@@ -301,10 +294,7 @@ collapse_aln_resources = rule_resources('samtools/sort')
 
 
 rule collapse_alignments:
-    '''
-    Uses coelsch script collapse_ha_specific_alns.py to select the best haplotype alignment(s) for each read
-    and outputs a single alignment with a new ha tag that indicates which haplotype(s) is/are best
-    '''
+    '''Collapse founder-specific alignments into one haplotype-tagged BAM.'''
     input:
         bam=results('aligned_data/{dataset_name}.namesorted.bam')
     output:

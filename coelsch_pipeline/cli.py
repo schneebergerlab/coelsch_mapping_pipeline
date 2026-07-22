@@ -237,14 +237,25 @@ def init_config(destination, force, clear_prompts):
 @cli.command("run", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
 @click.option("--configfile", "-c", type=click.Path(exists=True), default="coelsch_mapping_config.yaml",
               help="Path to config file")
+@click.option("--set", "overrides", multiple=True, help="Override config values (key=value)")
 @click.pass_context
-def run_pipeline(ctx, configfile):
+def run_pipeline(ctx, configfile, overrides):
     """Run the pipeline."""
+
+    config_overrides = []
+    for item in overrides:
+        if "=" not in item:
+            click.echo(f"Ignoring malformed --set '{item}'", err=True)
+            continue
+        config_overrides.append(item)
 
     args = [
         "--snakefile", str(SNAKEFILE.resolve()),
         "--configfile", str(configfile),
     ]
+
+    if config_overrides:
+        args += ["--config"] + config_overrides
 
     # Add any unknown extra CLI args
     args += ctx.args

@@ -47,7 +47,7 @@ results_dir: "{{ results_dir | default('results') }}"
 datasets:
   {{ dataset_name }}:
     # Sequencing technology preset passed to coelsch --seq-type.
-    # Choices: 10x_rna, 10x_atac, bd_rna, bd_atac, takara_dna, wgs, other
+    # Choices: 10x_rna, 10x_atac, bd_rna, takara_dna, wgs, other
     technology: "{{ technology }}"
 
     # Unit represented by each barcode/sample.
@@ -117,9 +117,9 @@ runtime:
     minimap2: null # environment used for rules involving minimap2, requires minimap2, samtools
     htslib: null # environment used for rules involving samtools/bcftools/bgzip/tabix
     seqtk: null # environment used for rules involving seqtk
-    msyd: null # environment used for rules involving syri and msyd (see https://github.com/schneebergerlab)
+    syri: null # environment used for rules involving syri (see https://github.com/schneebergerlab)
     star: null # environment used for rules involving STAR, requires STAR=2.7.11a
-    coelsch: null # environment used for rules involving coelsch, also requires seaborn, ipykernel, nbconvert
+    coelsch: null # environment used for rules involving coelsch, also requires seaborn, ipykernel, nbconvert for notebooks
 
 
   # Rule resources. Each entry supports:
@@ -132,7 +132,7 @@ runtime:
       threads: 4
       mem_mb: 8000
 
-    mappability:
+    genmap:
       threads: 16
       mem_per_thread: 1024
 

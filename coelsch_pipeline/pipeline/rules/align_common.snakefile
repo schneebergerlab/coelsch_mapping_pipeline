@@ -2,26 +2,6 @@ import os
 import math
 import gzip
 from glob import glob
-from collections import defaultdict
-
-
-SAMPLE_NAME_DATASET_MAPPING = {}
-DATASET_SAMPLE_NAME_MAPPING = defaultdict(list)
-for dataset_name in config['datasets']:
-    # config only stores dataset_name -> sample_name_glob relationship
-    # use globbing to determine the sample_name -> dataset_name relationship
-    for basename_glob in config['datasets'][dataset_name]['input_file_basenames']:
-        # create glob.glob style globbing string for identifying files matching the input_file_basenames pattern
-        read1_glob = raw_data(f'{basename_glob}{cfg.file_suffixes.read1}')
-        # create a snakemake glob_wildcards style glob for extracting the fully expanded sample_names
-        sn_wildcards_read1_glob = raw_data(f'{{sample_name}}{cfg.file_suffixes.read1}')
-        sample_names = glob_wildcards(sn_wildcards_read1_glob, files=glob(read1_glob)).sample_name
-        # add the sample names to the reference mappings
-        for sn in sample_names:
-            SAMPLE_NAME_DATASET_MAPPING[sn] = dataset_name
-            DATASET_SAMPLE_NAME_MAPPING[dataset_name].append(sn)
-
-
 def get_star_index_input(wc):
     '''input for STAR genome index generation'''
     input_ = {
@@ -89,10 +69,7 @@ star_index_resources = rule_resources('star/index')
 
 
 rule build_STAR_index:
-    """
-    Builds a STAR genome index for alignment. Uses either reference genome alone, or in conjunction with a 
-    VCF file to produce a "STAR consensus" variant transformed genome.
-    """
+    '''Build a STAR index, optionally with a haploid genome transform VCF.'''
     input:
         unpack(get_star_index_input)
     output:
@@ -145,7 +122,7 @@ def get_geno_group(dataset_name):
 
 def get_star_fastq_input(dataset_name, fastq_type):
     '''use globbing to identify all the input fastqs for a dataset from input_file_basenames'''
-    sample_names = DATASET_SAMPLE_NAME_MAPPING[dataset_name]
+    sample_names = sample_dataset_map.samples_for_dataset(dataset_name)
     return expand(
         raw_data('{sample_name}{file_suffix}'),
         sample_name=sample_names,

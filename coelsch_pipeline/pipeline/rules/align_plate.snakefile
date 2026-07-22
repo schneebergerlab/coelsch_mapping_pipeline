@@ -1,4 +1,3 @@
-from glob import glob
 
 include: './align_common.snakefile'
 
@@ -10,7 +9,7 @@ def STAR_consensus_input(wc):
       - index: the STAR index generated from the reference genome plus VCF transform
       - read, mate: the fastq files for the sample - represents a single individual/barcode
     '''
-    dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
+    dataset_name = sample_dataset_map.dataset_for_sample(wc.sample_name)
     ds = dataset(dataset_name)
     ref_name = ds.reference_genotype
     geno_group = get_geno_group(dataset_name)
@@ -33,7 +32,7 @@ def get_readfiles_cmd(wc, input):
 
 def get_transform_flag(wc):
     '''STAR genome transform flag - necessary if index has a VCF transformation'''
-    dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
+    dataset_name = sample_dataset_map.dataset_for_sample(wc.sample_name)
     ref = dataset(dataset_name).reference_genotype
     if wc.qry != ref:
         return '--genomeTransformOutput "SAM"'
@@ -45,9 +44,7 @@ star_align_resources = rule_resources('star/align/plate')
 
 
 rule STAR_consensus:
-    '''
-    map reads for a single individual/barcode using STARsolo and a VCF-transformed genome index.
-    '''
+    '''Align one plate sample to one founder-specific STAR consensus genome.'''
     input:
         unpack(STAR_consensus_input)
     output:
@@ -105,9 +102,7 @@ samtools_sort_resources = rule_resources('samtools/sort')
 
 
 rule sort_bam_by_name:
-    '''
-    name-sort the output of star consensus to ensure consistent order of read-ids across haplotypes
-    '''
+    '''Name-sort one founder-specific plate alignment BAM.'''
     input:
         bam=results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam'),
         bai=results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.sorted.bam.bai')
@@ -129,7 +124,7 @@ rule sort_bam_by_name:
 
 def get_merge_haps_input(wc):
     '''Expand all haplotypes that have been aligned to for a sample/barcode to create merge input'''
-    dataset_name = SAMPLE_NAME_DATASET_MAPPING[wc.sample_name]
+    dataset_name = sample_dataset_map.dataset_for_sample(wc.sample_name)
     qrys = get_dataset_haplotypes(dataset_name)
     return expand(
         results('aligned_data/single_barcodes/haploid/{sample_name}.{qry}.namesorted.bam'),
@@ -141,9 +136,7 @@ samtools_merge_resources = rule_resources('samtools/merge/sample')
 
 
 rule merge_name_sorted_hap_bams:
-    '''
-    merge all haplotype-specific alignments for a sample/barcode into a single name-sorted bam file for haplotype collapsing
-    '''
+    '''Merge founder-specific BAMs for one plate sample before collapsing.'''
     input:
         bams=get_merge_haps_input
     output:
@@ -165,12 +158,7 @@ collapse_aln_resources = rule_resources('collapse_alignments')
 
 
 rule collapse_alignments:
-    '''
-    Uses coelsch script collapse_ha_specific_alns.py to select the best haplotype alignment(s) for each read
-    and outputs a single alignment with a new ha tag that indicates which haplotype(s) is/are best.
-    Also adds new RG tag to bam file to indicate the sample name, so that this can be identified later
-    after sample-wise merging
-    '''
+    '''Collapse one plate sample into a coordinate-sorted haplotype-tagged BAM.'''
     input:
         bam=results('aligned_data/single_barcodes/{sample_name}.namesorted.bam')
     output:
@@ -184,12 +172,12 @@ rule collapse_alignments:
     shell:
         format_command(setup_tmpdir() + '''
         collapse_ha_specific_alns.py
-          -o ${{tmpdir}}/{wildcards.dataset_name}.unsorted.bam
+          -o ${{tmpdir}}/{wildcards.sample_name}.unsorted.bam
           {input.bam};
 
         samtools addreplacerg
           -r "ID:{wildcards.sample_name}"
-          ${{tmpdir}}/{wildcards.dataset_name}.unsorted.bam |
+          ${{tmpdir}}/{wildcards.sample_name}.unsorted.bam |
         samtools sort -@ {threads}
           -T ${{tmpdir}}/{wildcards.sample_name}.sort_tmp
           -o {output.bam} - ;
@@ -200,7 +188,7 @@ rule collapse_alignments:
 
 def merge_samples_input(wc):
     '''input for sample/barcode-wise merging'''
-    sample_names = DATASET_SAMPLE_NAME_MAPPING[wc.dataset_name]
+    sample_names = sample_dataset_map.samples_for_dataset(wc.dataset_name)
     return expand(
         results('aligned_data/single_barcodes/{sample_name}.sorted.bam'),
         sample_name=sample_names
@@ -208,7 +196,7 @@ def merge_samples_input(wc):
 
 
 rule list_bam:
-    '''create a list of bam files representing all the samples for a dataset, for merging'''
+    '''Write the list of per-sample BAMs belonging to one dataset.'''
     input:
         bams=merge_samples_input
     output:
@@ -222,7 +210,7 @@ samtools_merge_ds_resources = rule_resources('samtools/merge/dataset')
 
 
 rule merge_bams:
-    '''sample-wise barcode merging'''
+    '''Merge all plate sample BAMs into one dataset-level BAM.'''
     input:
         results("{dataset_name}.list")
     output:
