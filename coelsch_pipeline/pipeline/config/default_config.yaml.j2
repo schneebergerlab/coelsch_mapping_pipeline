@@ -114,6 +114,7 @@ runtime:
   # you can use this section to override them.
   conda_envs:
     genmap: null # environment used for rules involving genmap, requires genmap, bedtools, samtools
+    anianns: null # environment used for rules involving anianns, requires anianns, seqkit
     minimap2: null # environment used for rules involving minimap2, requires minimap2, samtools
     htslib: null # environment used for rules involving samtools/bcftools/bgzip/tabix
     seqtk: null # environment used for rules involving seqtk
@@ -133,6 +134,10 @@ runtime:
       mem_mb: 8000
 
     genmap:
+      threads: 16
+      mem_per_thread: 1024
+
+    anianns:
       threads: 16
       mem_per_thread: 1024
 
@@ -221,7 +226,8 @@ variants:
     kmer_size: 100 # the kmer size for genmap mappability calculation
     edit_dist: 2 # number of edits allowed between kmers to consider them the same
     min_mappability: 0.51 # the min mappability to keep variants in - others are removed
-    mask_gap_size: 500 # min number of basepairs between two low mappability regions before they are merged together
+    mask_repeats: False # whether to use AniAnns to additionally mask satellite repeat regions e.g. CEN and 5S
+    mask_gap_size: 500 # min number of basepairs between two masked regions before they are merged together
 
   minimap2:
     preset: "asm10" # the preset used for whole genome alignment. see minimap manual
@@ -229,6 +235,7 @@ variants:
 
   syri:
     use_low_qual_filters: False # whether to use syris default filtering
+    include_inversions: True # whether to retain variants in regions labelled as inversions
 
   star_consensus:
     max_hdr_length: 0 # the maximum size of syri HDRs to try to resolve to snps/indels

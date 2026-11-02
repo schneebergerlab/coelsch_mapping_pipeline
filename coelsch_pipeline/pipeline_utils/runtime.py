@@ -24,7 +24,7 @@ def setup_tmpdir_getter(cfg):
     tmpdir = _get_attr_or_key(runtime, 'tmpdir')
 
     def _wrapped(prefix="{rule}"):
-        base = '${TMPDIR:-/tmp}' if tmpdir is None else tmpdir
+        base = '${{TMPDIR:-/tmp}}' if tmpdir is None else tmpdir
         return f"""
         tmpdir=$(mktemp -d "{base}/{prefix}.{{jobid}}.XXXXXX");
         trap 'rm -rf -- "$tmpdir"' EXIT;

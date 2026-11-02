@@ -118,6 +118,13 @@ def get_clean_input(wc):
     return input_
 
 
+def crossing_combinations_flag(ds):
+    if ds.recombinant_parent_jsons is None:
+        return '-X "' + ','.join(ds.crossing_combinations) + '"'
+    else:
+        return ''
+
+
 def run_genotype_flag(ds):
     recombinant_jsons = ds.recombinant_parent_jsons or []
     pooled_crosses = len(ds.crossing_combinations or []) > 1
@@ -175,7 +182,7 @@ def get_load_params(wc):
         f'--lifecycle-stage {ds.lifecycle_stage}',
         f'--crossing-strategy {ds.crossing_strategy}',
         f'--genotyping-strategy {ds.genotyping_strategy}',
-        '-X "' + ','.join(ds.crossing_combinations) + '"',
+        crossing_combinations_flag(ds),
         run_genotype_flag(ds),
         recombinant_parent_json_flags(ds),
         f'--min-alignment-score {load.min_alignment_score}',

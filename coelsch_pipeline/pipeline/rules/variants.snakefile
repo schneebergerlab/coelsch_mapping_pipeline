@@ -10,9 +10,6 @@ def geno_group_qrys(wc):
     return geno_group_members(wc)[1:]
 
 
-mappability_resources = rule_resources('genmap')
-
-
 rule mappability:
     '''Soft-mask low-mappability regions in each founder reference genome.'''
     input:
@@ -20,6 +17,7 @@ rule mappability:
         fai=lambda wc: get_fasta(wc.geno) + '.fai',
     output:
         bedgraph=annotation('{geno}.mappability.bedgraph'),
+        bed=annotation('bed/{geno}.mappability_mask.bed'),
         fasta=annotation('{geno}.softmasked.fa'),
         fai=annotation('{geno}.softmasked.fa.fai'),
     params:
@@ -28,9 +26,9 @@ rule mappability:
         min_mappability=cfg.variants.mappability.min_mappability,
         mask_gap_size=cfg.variants.mappability.mask_gap_size,
         bedgraph_prefix=lambda wc: annotation(f'{wc.geno}.mappability')
-    threads: mappability_resources.threads
+    threads: rule_resources('genmap').threads
     resources:
-        mem_mb=mappability_resources.mem_mb,
+        mem_mb=rule_resources('genmap').mem_mb,
     conda:
         get_conda_env('genmap')
     shell:
@@ -48,14 +46,45 @@ rule mappability:
           -g {input.fai}
           -i stdin |
         bedtools merge -d {params.mask_gap_size}
-          -i stdin |
+          -i stdin
+        > {output.bed};
         bedtools maskfasta -soft
           -fi {input.fasta}
-          -bed stdin
+          -bed {output.bed}
           -fo {output.fasta};
 
         samtools faidx {output.fasta};
         rm -rf {input.fasta}.genmap_idx;
+        ''')
+
+
+rule repeat_mask:
+    input:
+        fasta=lambda wc: get_fasta(wc.geno),
+        fai=lambda wc: get_fasta(wc.geno) + '.fai',
+    output:
+        bed=annotation('bed/{geno}.repeats.bed'),
+    conda:
+        get_conda_env('anianns')
+    threads: 
+        rule_resources('anianns').threads
+    resources:
+        mem_mb=rule_resources('anianns').mem_mb
+    shell:
+        setup_tmpdir() + format_command('''
+        seqkit seq -m 2000 {input.fasta}
+        > "$tmpdir/input.fa";
+
+        anianns annotate -j {threads}
+          -w 1000
+          -f "$tmpdir/input.fa"
+          -d "$tmpdir/anianns_output"
+          -o bed;
+
+        cat "$tmpdir/anianns_output/"*.bed |
+        grep -v '^#' |
+        sort -k1,1 -k2,2n
+         > {output.bed}
         ''')
 
 
@@ -87,6 +116,35 @@ rule minimap2_wga:
         samtools sort -o - - > {output};
 
         samtools index {output}
+        ''')
+
+
+bedtools_resources = rule_resources('bedtools')
+
+
+rule paftools_liftover:
+    '''Project query-genome masks into reference coordinates.'''
+    input:
+        bam=annotation('wga/{ref}.{qry}.bam'),
+        bed=annotation('bed/{qry}.{mask}.bed'),
+    output:
+        bed=annotation('bed/lifted/{ref}.{qry}.{mask}.bed')
+    wildcard_constraints:
+        mask='mappability_mask|repeats'
+    threads: bedtools_resources.threads
+    resources:
+        mem_mb=bedtools_resources.mem_mb,
+    conda:
+        get_conda_env('minimap2')
+    shell:
+        format_command('''
+        samtools view -h {input.bam} |
+        paftools.js sam2paf - |
+        awk -F '\\t' -v OFS='\\t' '{{for (i=13; i<=NF; i++) if ($i ~ /^cg:Z:/) gsub(/[=X]/, "M", $i); print}}' |
+        paftools.js liftover -l 0 -q 5 - {input.bed} |
+        awk -v OFS='\\t' '$3 > $2 {{print $1, $2, $3}}' |
+        sort -k1,1 -k2,2n -k3,3n
+        > {output.bed};
         ''')
 
 
@@ -123,18 +181,35 @@ rule run_syri:
         ''')
 
 
-bedtools_resources = rule_resources('bedtools')
+def qry_whitelist_input(wc):
+    mask_types = ['mappability_mask']
+    if cfg.variants.mappability.get('mask_repeats', False):
+        mask_types.append('repeats')
+
+    return {
+        'vcf': annotation(f'vcf/syri/{wc.ref}.{wc.qry}.syri.vcf'),
+        'fai': annotation(f'{wc.ref}.softmasked.fa.fai'),
+        'ref_masks': expand(
+            annotation('bed/{ref}.{mask}.bed'),
+            ref=wc.ref, mask=mask_types
+        ),
+        'qry_masks': expand(
+            annotation('bed/lifted/{ref}.{qry}.{mask}.bed'),
+            ref=wc.ref, qry=wc.qry, mask=mask_types
+        ),
+    }
 
 
 rule get_whitelist_regions:
     '''Create pairwise syntenic whitelist regions for marker selection.'''
     input:
-        vcf=annotation('vcf/syri/{ref}.{qry}.syri.vcf'),
-        fai=annotation('{ref}.softmasked.fa.fai'),
+        unpack(qry_whitelist_input)
     output:
         bed=temp(annotation('bed/{ref}.{qry}.syri.bed')),
         blacklist=temp(annotation('bed/{ref}.{qry}.blacklist.bed')),
         whitelist=annotation('bed/{ref}.{qry}.whitelist.bed'),
+    params:
+        include_inversions=int(cfg.variants.syri.include_inversions),
     threads: bedtools_resources.threads
     resources:
         mem_mb=bedtools_resources.mem_mb,
@@ -148,12 +223,15 @@ rule get_whitelist_regions:
              info=$8; sub(/^.*(^|;)END=/,"",info); sub(/;.*/,"",info); print $1, $2-1, info, $3
            }}' {input.vcf} > {output.bed};
 
-        bedtools genomecov 
+        bedtools genomecov
           -i {output.bed} -bg -g {input.fai} |
-        awk -v OFS='\t' '$4 > 1 {{print $1, $2, $3}}' > {output.blacklist};
+        awk -v OFS='\\t' '$4 > 1 {{print $1, $2, $3}}' |
+        cat - {input.ref_mask} {input.qry_mask} |
+        sort -k1,1 -k2,2n -k3,3n |
+        bedtools merge -i - > {output.blacklist};
 
-        awk -v OFS='\t'
-           '$4 ~ "^SYNAL" || $4 ~ "^INVAL"' {output.bed} |
+        awk -v OFS='\t' -v include_inversions={params.include_inversions}
+           '$4 ~ "^SYNAL" || (include_inversions && $4 ~ "^INVAL") {output.bed} |
         bedtools subtract 
           -a stdin -b {output.blacklist} > {output.whitelist}
         ''')

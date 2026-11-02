@@ -1,0 +1,10 @@
+name: anianns
+channels:
+ - conda-forge
+ - bioconda
+dependencies:
+ - python=3.11
+ - pip
+ - seqkit
+ - pip:
+   - anianns==0.7.1.post2

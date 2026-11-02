@@ -21,4 +21,4 @@ dependencies:
  - nbconvert
  - seaborn
  - pip:
-   - git+https://github.com/schneebergerlab/snco.git
+   - git+https://github.com/schneebergerlab/coelsch.git

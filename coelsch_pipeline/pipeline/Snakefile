@@ -42,7 +42,7 @@ wildcard_constraints:
     sample_name=r'\w+',
     ref='|'.join(ref_genotypes),
     qry='|'.join(genotypes),
-    geno='|'.join(genotypes),
+    geno='|'.join(genotypes.union(ref_genotypes)),
 
 
 tech_types = {dataset(dataset_name).technology for dataset_name in cfg.datasets}
